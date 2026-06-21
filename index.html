@@ -402,6 +402,7 @@ async function pool(items, fn, conc){
    Results stream into the global `photos` array as folders are read, so the
    UI can render progressively instead of waiting for the full scan. ---- */
 async function scanDrive(onProgress){
+  const have = new Set(photos.map(p => p.id));   // keep cached photos on screen; add new ones
   let frontier = ["root"], folders = 0;
   while (frontier.length){
     const batches = await pool(frontier, listChildren, 3);
@@ -418,9 +419,11 @@ async function scanDrive(onProgress){
         if (it.folder){
           if ((it.folder.childCount ?? 1) > 0) next.push(it.id);
         } else if (it.file && (it.image || (it.file.mimeType || "").startsWith("image/"))){
+          if (have.has(it.id)) continue;   // already have it from cache
           const t = (it.thumbnails && it.thumbnails[0]) || null;
           const thumb = t ? (t.medium && t.medium.url) || (t.small && t.small.url) : null;
           if (!thumb) continue;   // can't display it without a thumbnail
+          have.add(it.id);
           photos.push({
             id: it.id,
             name: it.name,
@@ -461,8 +464,9 @@ function toRecord(it, prev){
 /* ---- Full first-time scan: proven folder walk, then snapshot a delta
    token so subsequent launches only fetch changes. ---- */
 async function fullScan(onProgress){
-  photos = []; rendered = 0; _listReqs = 0; excludedPaths = [];   // rediscover .nomedia folders
-  await scanDrive(onProgress);
+  _listReqs = 0; excludedPaths = [];   // small first pages again; rediscover .nomedia folders
+  await scanDrive(onProgress);         // merges into existing photos, so a cached view isn't wiped
+  if (excludedPaths.length) photos = photos.filter(p => !isExcluded(p.path));
   try {
     const d = await graphGet(GRAPH + "/me/drive/root/delta?token=latest");
     deltaLink = d["@odata.deltaLink"] || null;
@@ -568,7 +572,17 @@ function renderMore(){
     }
   }
   stream.appendChild(frag);
-  if (rendered >= renderQueue.length && io){ io.disconnect(); io = null; }
+}
+
+/* Render batches until the viewport (plus a buffer) is filled or we run out.
+   This keeps the screen full as the queue grows during scanning, without
+   relying on the observer to re-fire while the sentinel stays in view. */
+function topUp(){
+  let guard = 0;
+  while (rendered < renderQueue.length && guard++ < 400){
+    renderMore();
+    if ($("sentinel").getBoundingClientRect().top > window.innerHeight + 1000) break;
+  }
 }
 
 function makeCell(p){
@@ -593,9 +607,9 @@ function makeCell(p){
 }
 
 function setupInfiniteScroll(){
-  if (io) io.disconnect();
-  io = new IntersectionObserver((e) => { if (e[0].isIntersecting) renderMore(); },
-        { rootMargin: "800px" });
+  if (io) return;   // set up once; #sentinel lives outside #stream so it survives rebuilds
+  io = new IntersectionObserver((e) => { if (e[0].isIntersecting) topUp(); },
+        { rootMargin: "1000px" });
   io.observe($("sentinel"));
 }
 
@@ -617,9 +631,12 @@ function refreshTimeline(force){
   if (refreshTimer){ clearTimeout(refreshTimer); refreshTimer = null; }
   lastRefresh = now;
   buildRenderQueue();
+  const keep = Math.min(Math.max(rendered, BATCH), renderQueue.length);
   stream.innerHTML = "";
   rendered = 0;
-  renderMore();
+  while (rendered < keep) renderMore();   // re-render what was visible (cells reused from cache)
+  topUp();                                // fill the viewport with any newly-found photos
+  setupInfiniteScroll();                  // idempotent; keep scroll alive during the scan
   $("count").textContent = photos.length.toLocaleString() + " photos";
 }
 
