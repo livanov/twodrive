@@ -8,7 +8,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Lumen" />
 <title>Lumen — OneDrive timeline</title>
-<link rel="manifest" href='data:application/json,{"name":"Lumen","short_name":"Lumen","display":"standalone","background_color":"%230c0c0e","theme_color":"%230c0c0e","start_url":"."}' />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
 <style>
   :root{
     --bg:#0c0c0e; --surface:#16161a; --surface-2:#1f1f25;
@@ -164,6 +166,7 @@
            placeholder="00000000-0000-0000-0000-000000000000" />
 
     <button class="btn" id="connectBtn">Connect OneDrive</button>
+    <button class="btn ghost" id="installBtn" style="display:none">⤓ Install app on this device</button>
     <button class="btn ghost" id="resetBtn" style="display:none">Use a different account / ID</button>
     <p class="err" id="setupErr"></p>
 
@@ -187,6 +190,7 @@
     <span class="mark"><span class="dot"></span>Lumen</span>
     <span class="count" id="count"></span>
     <span class="spacer"></span>
+    <button class="icon-btn" id="installBtn2" title="Install app" style="display:none">⤓</button>
     <button class="icon-btn" id="refreshBtn" title="Rescan">↻</button>
     <button class="icon-btn" id="signoutBtn" title="Sign out">⏻</button>
   </div>
@@ -795,6 +799,30 @@ $("resetBtn").onclick = async () => {
 };
 $("refreshBtn").onclick = () => startGallery(true);   // full rescan, ignore cache
 $("signoutBtn").onclick = $("resetBtn").onclick;
+
+/* ---- PWA: service worker + install prompt ---- */
+if ("serviceWorker" in navigator){
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+let installEvent = null;
+const installBtns = [$("installBtn"), $("installBtn2")];
+function showInstall(on){ installBtns.forEach(b => { if (b) b.style.display = on ? "" : "none"; }); }
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();           // keep the event so we can trigger it from our button
+  installEvent = e;
+  showInstall(true);
+});
+async function doInstall(){
+  if (!installEvent) return;
+  installEvent.prompt();
+  try { await installEvent.userChoice; } catch(e){}
+  installEvent = null;
+  showInstall(false);
+}
+installBtns.forEach(b => { if (b) b.onclick = doInstall; });
+window.addEventListener("appinstalled", () => { installEvent = null; showInstall(false); });
 
 /* ---- Boot ---- */
 (async () => {
