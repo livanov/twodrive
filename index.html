@@ -270,9 +270,11 @@ async function persistCache(){
     thumb:p.thumb, large:p.large, download:p.download }));
   await idbSet(cacheKey, { photos: lean, deltaLink, savedAt: Date.now() });
 }
+let _savedOnce = false;
 function scheduleSave(){
   if (saveTimer) return;   // coalesce; persisting the whole list is not free
-  saveTimer = setTimeout(() => { saveTimer = null; persistCache(); }, 4000);
+  const delay = _savedOnce ? 4000 : 600;   // first write lands fast
+  saveTimer = setTimeout(() => { saveTimer = null; _savedOnce = true; persistCache(); }, delay);
 }
 
 /* ---- Load MSAL with CDN fallbacks (robust when self-hosted) ---- */
@@ -319,14 +321,25 @@ async function getToken(){
   }
 }
 
-/* ---- Graph GET with a shared back-off gate + 401 token-refresh ----
-   On 429/503 we park a global cooldown so ALL in-flight requests pause
-   together instead of dog-piling the throttle. ---- */
+/* ---- Graph GET: gentle, throttle-aware client ----
+   - Global pacing: requests are spaced >= REQ_GAP apart, so even with a
+     few workers we sip rather than gulp (avoids tripping 429s).
+   - Shared cooldown: on 429/503 ALL in-flight requests pause together,
+     honoring the server's Retry-After header when present.            ---- */
 let _token = null;
-let _cooldownUntil = 0;
+let _cooldownUntil = 0;   // wall-clock ms until which everyone must wait
+let _nextSlot = 0;        // earliest wall-clock ms the next request may start
+const REQ_GAP = 180;      // min spacing between Graph requests (ms)
 async function graphGet(url, tries = 0){
-  const now = Date.now();
+  // 1) respect an active throttle cooldown
+  let now = Date.now();
   if (now < _cooldownUntil) await sleep(_cooldownUntil - now);
+  // 2) take the next global pacing slot
+  now = Date.now();
+  const slot = Math.max(now, _nextSlot);
+  _nextSlot = slot + REQ_GAP;
+  if (slot > now) await sleep(slot - now);
+
   if (!_token) _token = await getToken();
   let r;
   try {
@@ -337,24 +350,32 @@ async function graphGet(url, tries = 0){
   }
   if (r.status === 401 && tries < 1){ _token = await getToken(); return graphGet(url, tries + 1); }
   if ((r.status === 429 || r.status === 503) && tries < 8){
-    const wait = (parseInt(r.headers.get("Retry-After") || "0", 10) || Math.min(64, 2 ** (tries + 1))) * 1000;
-    _cooldownUntil = Math.max(_cooldownUntil, Date.now() + wait);
-    await sleep(wait);
+    // Honor Retry-After (seconds) when the server sends it; else back off.
+    const ra = parseInt(r.headers.get("Retry-After") || "", 10);
+    const secs = (Number.isFinite(ra) && ra > 0) ? ra : Math.min(64, 2 ** (tries + 1));
+    _cooldownUntil = Math.max(_cooldownUntil, Date.now() + secs * 1000);
+    await sleep(secs * 1000);
     return graphGet(url, tries + 1);
   }
   if (!r.ok) throw new Error("Graph " + r.status + ": " + (await r.text()).slice(0,160));
   return r.json();
 }
 
-/* ---- List one folder's children (with thumbnails), following paging ---- */
+/* ---- List one folder's children (with thumbnails), following paging.
+   The first few requests use a small page size so the very first photos
+   come back quickly and paint/persist almost immediately; later requests
+   ramp up to a big page size for throughput. ---- */
+let _listReqs = 0;
 async function listChildren(id){
-  let url = (id === "root"
+  const base = (id === "root"
     ? GRAPH + "/me/drive/root/children"
-    : GRAPH + "/me/drive/items/" + id + "/children")
-    + "?$top=200&$expand=thumbnails";
+    : GRAPH + "/me/drive/items/" + id + "/children");
+  const top = _listReqs < 3 ? 40 : 200;
+  let url = base + "?$top=" + top + "&$expand=thumbnails";
   const out = [];
   while (url){
     const data = await graphGet(url);
+    _listReqs++;
     if (data.value) out.push(...data.value);
     url = data["@odata.nextLink"] || null;
   }
@@ -375,7 +396,7 @@ async function pool(items, fn, conc){
 async function scanDrive(onProgress){
   let frontier = ["root"], folders = 0;
   while (frontier.length){
-    const batches = await pool(frontier, listChildren, 4);
+    const batches = await pool(frontier, listChildren, 3);
     const next = [];
     for (const children of batches){
       for (const it of children){
@@ -423,7 +444,7 @@ function toRecord(it, prev){
 /* ---- Full first-time scan: proven folder walk, then snapshot a delta
    token so subsequent launches only fetch changes. ---- */
 async function fullScan(onProgress){
-  photos = []; rendered = 0;
+  photos = []; rendered = 0; _listReqs = 0;   // start with small pages again
   await scanDrive(onProgress);
   try {
     const d = await graphGet(GRAPH + "/me/drive/root/delta?token=latest");
