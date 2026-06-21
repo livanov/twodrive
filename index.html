@@ -231,6 +231,49 @@ function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
 
 let pca = null;          // MSAL instance
 let photos = [];         // {id,name,date,thumb,large,download}
+let deltaLink = null;    // Graph delta token for incremental rescans
+
+/* ---- IndexedDB: cache the photo list so launches skip the full scan ---- */
+const DB_NAME = "lumen", STORE = "cache";
+let _db = null, cacheKey = null, saveTimer = null;
+function idb(){
+  if (_db) return Promise.resolve(_db);
+  return new Promise((res, rej) => {
+    let r;
+    try { r = indexedDB.open(DB_NAME, 1); } catch(e){ return rej(e); }
+    r.onupgradeneeded = () => r.result.createObjectStore(STORE);
+    r.onsuccess = () => res(_db = r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key){
+  try {
+    const db = await idb();
+    return await new Promise((res, rej) => {
+      const t = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
+      t.onsuccess = () => res(t.result); t.onerror = () => rej(t.error);
+    });
+  } catch(e){ return null; }
+}
+async function idbSet(key, val){
+  try {
+    const db = await idb();
+    return await new Promise((res, rej) => {
+      const t = db.transaction(STORE, "readwrite").objectStore(STORE).put(val, key);
+      t.onsuccess = () => res(); t.onerror = () => rej(t.error);
+    });
+  } catch(e){}
+}
+async function persistCache(){
+  if (!cacheKey) return;
+  const lean = photos.map(p => ({ id:p.id, name:p.name, date:p.date,
+    thumb:p.thumb, large:p.large, download:p.download }));
+  await idbSet(cacheKey, { photos: lean, deltaLink, savedAt: Date.now() });
+}
+function scheduleSave(){
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => { saveTimer = null; persistCache(); }, 1500);
+}
 
 /* ---- Load MSAL with CDN fallbacks (robust when self-hosted) ---- */
 function loadMsal(){
@@ -348,6 +391,74 @@ async function scanDrive(onProgress){
   }
 }
 
+/* ---- Map a Graph driveItem to our photo record (reusing cached fields) ---- */
+function toRecord(it, prev){
+  prev = prev || {};
+  const t = (it.thumbnails && it.thumbnails[0]) || null;
+  return {
+    id: it.id,
+    name: it.name,
+    date: (it.photo && it.photo.takenDateTime)
+          || (it.fileSystemInfo && it.fileSystemInfo.createdDateTime)
+          || it.lastModifiedDateTime,
+    thumb: (t && ((t.medium && t.medium.url) || (t.small && t.small.url))) || prev.thumb || null,
+    large: (t && ((t.large && t.large.url) || (t.medium && t.medium.url))) || prev.large || null,
+    download: it["@microsoft.graph.downloadUrl"] || prev.download || null,
+  };
+}
+
+/* ---- Full first-time scan: proven folder walk, then snapshot a delta
+   token so subsequent launches only fetch changes. ---- */
+async function fullScan(onProgress){
+  photos = []; rendered = 0;
+  await scanDrive(onProgress);
+  try {
+    const d = await graphGet(GRAPH + "/me/drive/root/delta?token=latest");
+    deltaLink = d["@odata.deltaLink"] || null;
+  } catch(e){ deltaLink = null; }   // incremental just won't kick in next time
+}
+
+/* ---- Incremental rescan: ask Graph only for what changed since deltaLink.
+   Merges new/changed images in and drops deleted ones. Returns counts. ---- */
+async function deltaSync(onProgress){
+  let url = deltaLink;
+  let changed = 0, removed = 0;
+  const byId = new Map(photos.map(p => [p.id, p]));
+  while (url){
+    const data = await graphGet(url);
+    for (const it of (data.value || [])){
+      if (it.deleted){
+        if (byId.delete(it.id)) removed++;
+        continue;
+      }
+      const isImg = it.file && (it.image || (it.file.mimeType || "").startsWith("image/"));
+      if (isImg){
+        byId.set(it.id, toRecord(it, byId.get(it.id))); changed++;
+      } else if (it.file && byId.has(it.id)){
+        byId.delete(it.id); removed++;   // was an image, no longer qualifies
+      }
+    }
+    if (data["@odata.nextLink"]) url = data["@odata.nextLink"];
+    else { deltaLink = data["@odata.deltaLink"] || deltaLink; url = null; }
+    onProgress && onProgress(byId.size);
+  }
+  photos = [...byId.values()];
+  return { changed, removed };
+}
+
+/* ---- Fetch a fresh thumbnail set for one item (cached URLs expire, and
+   delta results don't carry thumbnails). Updates the record in place. ---- */
+async function resolveThumb(p){
+  try {
+    const d = await graphGet(GRAPH + "/me/drive/items/" + p.id + "/thumbnails/0");
+    const t = (d && d.value && d.value[0]) || d || {};
+    if (t.large && t.large.url) p.large = t.large.url;
+    const m = (t.medium && t.medium.url) || (t.small && t.small.url) || null;
+    if (m) p.thumb = m;
+    return m;
+  } catch(e){ return null; }
+}
+
 /* ============================ Rendering ============================ */
 const stream = $("stream");
 let renderQueue = [];   // flat list of {type:'month'|'photo', ...}
@@ -396,8 +507,15 @@ function makeCell(p){
   const c = document.createElement("div"); c.className = "cell";
   const img = document.createElement("img");
   img.loading = "lazy"; img.decoding = "async"; img.referrerPolicy = "no-referrer";
-  img.src = p.thumb;
   img.onload = () => img.classList.add("in");
+  // Self-heal: a cached URL that 403s (expired) or a delta item with no
+  // thumbnail yet → fetch a fresh one on demand, just for this image.
+  img.onerror = () => {
+    if (img._retried) return; img._retried = true;
+    resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
+  };
+  if (p.thumb) img.src = p.thumb;
+  else resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
   c.appendChild(img);
   c.addEventListener("click", () => openLightbox(p));
   return c;
@@ -446,10 +564,23 @@ function openLightbox(p){
 function showLb(){
   const p = photos[lbIndex]; if (!p) return;
   const img = $("lbImg");
-  img.src = p.large || p.download || p.thumb;
+  img.src = p.large || p.download || p.thumb || "";
   $("lbName").textContent = p.name || "";
   const dl = $("lbDl");
   if (p.download){ dl.href = p.download; dl.style.display = ""; } else { dl.style.display = "none"; }
+  // Upgrade to a full-size image and (re)resolve the download link if missing.
+  if (!p.large) resolveThumb(p).then(() => { if (photos[lbIndex] === p && p.large) img.src = p.large; });
+  if (!p.download){
+    graphGet(GRAPH + "/me/drive/items/" + p.id + "?$select=@microsoft.graph.downloadUrl")
+      .then(d => {
+        p.download = d["@microsoft.graph.downloadUrl"] || null;
+        if (photos[lbIndex] === p && p.download){
+          dl.href = p.download; dl.style.display = "";
+          if (!p.large && !img.src) img.src = p.download;
+          scheduleSave();
+        }
+      }).catch(() => {});
+  }
 }
 function closeLb(){ lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1; }
 function step(d){ lbIndex = (lbIndex + d + photos.length) % photos.length; showLb(); }
@@ -474,26 +605,61 @@ lb.addEventListener("touchend", (e) => {
 /* ============================ Flow ============================ */
 function show(id){ ["setup","gallery"].forEach(s => $(s).style.display = (s===id ? (id==="gallery"?"block":"flex") : "none")); }
 
-async function startGallery(){
+async function startGallery(force){
   show("gallery");
-  $("scanbar").style.display = "flex";
   $("empty").style.display = "none";
-  stream.innerHTML = ""; photos = []; rendered = 0;
+  stream.innerHTML = ""; photos = []; rendered = 0; deltaLink = null;
   if (io){ io.disconnect(); io = null; }
   lastRefresh = 0; if (refreshTimer){ clearTimeout(refreshTimer); refreshTimer = null; }
-  try {
-    await scanDrive((n, f) => {
-      $("scanText").textContent = "Scanning… " + n + " photos · " + f + " folders";
-      refreshTimeline(false);   // live preview of newest photos so far
-    });
-    refreshTimeline(true);      // final sort + render, no throttle
+
+  const acct = pca && pca.getActiveAccount();
+  cacheKey = "photos:" + (acct ? acct.homeAccountId : "anon");
+
+  // 1) Instant paint from the local cache, if we have one.
+  let haveCache = false;
+  const cached = force ? null : await idbGet(cacheKey);
+  if (cached && cached.photos && cached.photos.length){
+    photos = cached.photos;
+    deltaLink = cached.deltaLink || null;
+    refreshTimeline(true);
     setupInfiniteScroll();
+    haveCache = true;
+  }
+
+  // 2) Sync with OneDrive — incremental if we have a delta token, else full.
+  $("scanbar").style.display = "flex";
+  try {
+    let needFull = !deltaLink;
+    if (deltaLink){
+      $("scanText").textContent = "Checking for new photos…";
+      try {
+        const { changed, removed } = await deltaSync(n => {
+          $("scanText").textContent = "Syncing… " + n.toLocaleString() + " photos";
+        });
+        if (changed || removed){ refreshTimeline(true); setupInfiniteScroll(); }
+      } catch(e){
+        deltaLink = null; needFull = true;   // expired/invalid token → resync
+      }
+    }
+    if (needFull){
+      await fullScan((n, f) => {
+        $("scanText").textContent = "Scanning… " + n.toLocaleString() + " photos · " + f + " folders";
+        refreshTimeline(false);   // live preview of newest photos so far
+      });
+      refreshTimeline(true);
+      setupInfiniteScroll();
+    }
+    await persistCache();
     $("scanbar").style.display = "none";
     if (!photos.length) $("empty").style.display = "block";
   } catch (e){
     $("scanbar").style.display = "none";
-    $("empty").style.display = "block";
-    $("empty").innerHTML = "<h2>Couldn't load photos</h2>" + String(e.message || e);
+    if (haveCache){
+      // Keep showing cached photos; the sync just couldn't reach Graph.
+    } else {
+      $("empty").style.display = "block";
+      $("empty").innerHTML = "<h2>Couldn't load photos</h2>" + String(e.message || e);
+    }
   }
 }
 
@@ -534,7 +700,7 @@ $("resetBtn").onclick = async () => {
   try { if (pca){ const a = pca.getActiveAccount(); if (a) await pca.logoutRedirect({ account:a }); } } catch(e){}
   location.reload();
 };
-$("refreshBtn").onclick = startGallery;
+$("refreshBtn").onclick = () => startGallery(true);   // full rescan, ignore cache
 $("signoutBtn").onclick = $("resetBtn").onclick;
 
 /* ---- Boot ---- */
