@@ -462,14 +462,15 @@ async function deltaSync(onProgress){
     const data = await graphGet(url);
     for (const it of (data.value || [])){
       if (it.deleted){
-        if (byId.delete(it.id)) removed++;
+        if (byId.delete(it.id)){ removed++; cellCache.delete(it.id); }
         continue;
       }
       const isImg = it.file && (it.image || (it.file.mimeType || "").startsWith("image/"));
       if (isImg){
         byId.set(it.id, toRecord(it, byId.get(it.id))); changed++;
+        cellCache.delete(it.id);   // changed file → rebuild its cell with fresh thumb
       } else if (it.file && byId.has(it.id)){
-        byId.delete(it.id); removed++;   // was an image, no longer qualifies
+        byId.delete(it.id); removed++; cellCache.delete(it.id);   // no longer an image
       }
     }
     if (data["@odata.nextLink"]) url = data["@odata.nextLink"];
@@ -499,6 +500,9 @@ let renderQueue = [];   // flat list of {type:'month'|'photo', ...}
 let rendered = 0;
 const BATCH = 90;
 let io;
+// Reuse cell elements across re-renders so already-loaded thumbnails are
+// moved in the DOM, never re-downloaded (OneDrive thumb URLs aren't cacheable).
+const cellCache = new Map();   // photo id -> .cell element
 
 const monthLabel = (d) => {
   const dt = new Date(d);
@@ -538,6 +542,8 @@ function renderMore(){
 }
 
 function makeCell(p){
+  const hit = cellCache.get(p.id);
+  if (hit) return hit;                 // reuse: keeps the already-loaded image
   const c = document.createElement("div"); c.className = "cell";
   const img = document.createElement("img");
   img.loading = "lazy"; img.decoding = "async"; img.referrerPolicy = "no-referrer";
@@ -552,6 +558,7 @@ function makeCell(p){
   else resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
   c.appendChild(img);
   c.addEventListener("click", () => openLightbox(p));
+  cellCache.set(p.id, c);
   return c;
 }
 
@@ -642,7 +649,7 @@ function show(id){ ["setup","gallery"].forEach(s => $(s).style.display = (s===id
 async function startGallery(force){
   show("gallery");
   $("empty").style.display = "none";
-  stream.innerHTML = ""; photos = []; rendered = 0; deltaLink = null;
+  stream.innerHTML = ""; photos = []; rendered = 0; deltaLink = null; cellCache.clear();
   if (io){ io.disconnect(); io = null; }
   lastRefresh = 0; if (refreshTimer){ clearTimeout(refreshTimer); refreshTimer = null; }
 
