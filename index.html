@@ -313,12 +313,13 @@ async function pool(items, fn, conc){
   return out;
 }
 
-/* ---- Walk the whole drive, breadth-first, collecting images ---- */
+/* ---- Walk the whole drive, breadth-first, pushing images into `photos` ----
+   Results stream into the global `photos` array as folders are read, so the
+   UI can render progressively instead of waiting for the full scan. ---- */
 async function scanDrive(onProgress){
-  const found = [];
   let frontier = ["root"], folders = 0;
   while (frontier.length){
-    const batches = await pool(frontier, listChildren, 4);
+    const batches = await pool(frontier, listChildren, 6);
     const next = [];
     for (const children of batches){
       for (const it of children){
@@ -326,24 +327,25 @@ async function scanDrive(onProgress){
           if ((it.folder.childCount ?? 1) > 0) next.push(it.id);
         } else if (it.file && (it.image || (it.file.mimeType || "").startsWith("image/"))){
           const t = (it.thumbnails && it.thumbnails[0]) || null;
-          found.push({
+          const thumb = t ? (t.medium && t.medium.url) || (t.small && t.small.url) : null;
+          if (!thumb) continue;   // can't display it without a thumbnail
+          photos.push({
             id: it.id,
             name: it.name,
             date: (it.photo && it.photo.takenDateTime)
                   || (it.fileSystemInfo && it.fileSystemInfo.createdDateTime)
                   || it.lastModifiedDateTime,
-            thumb: t ? (t.medium && t.medium.url) || (t.small && t.small.url) : null,
-            large: t ? (t.large && t.large.url) || (t.medium && t.medium.url) : null,
+            thumb,
+            large: (t.large && t.large.url) || (t.medium && t.medium.url) || thumb,
             download: it["@microsoft.graph.downloadUrl"] || null,
           });
         }
       }
     }
     folders += frontier.length;
-    onProgress(found.length, folders);
+    onProgress(photos.length, folders);
     frontier = next;
   }
-  return found.filter(p => p.thumb);
 }
 
 /* ============================ Rendering ============================ */
@@ -408,6 +410,30 @@ function setupInfiniteScroll(){
   io.observe($("sentinel"));
 }
 
+/* ---- Re-sort + re-render the timeline from the current `photos`.
+   Throttled to at most once per REFRESH_MS during scanning so live
+   progress updates don't thrash the DOM; force=true bypasses the throttle
+   (used once the scan finishes). ---- */
+const REFRESH_MS = 1800;
+let lastRefresh = 0, refreshTimer = null;
+function refreshTimeline(force){
+  const now = Date.now();
+  if (!force){
+    const wait = REFRESH_MS - (now - lastRefresh);
+    if (wait > 0){
+      if (!refreshTimer) refreshTimer = setTimeout(() => { refreshTimer = null; refreshTimeline(false); }, wait);
+      return;
+    }
+  }
+  if (refreshTimer){ clearTimeout(refreshTimer); refreshTimer = null; }
+  lastRefresh = now;
+  buildRenderQueue();
+  stream.innerHTML = "";
+  rendered = 0;
+  renderMore();
+  $("count").textContent = photos.length.toLocaleString() + " photos";
+}
+
 /* ============================ Lightbox ============================ */
 let lbIndex = -1;
 const lb = $("lightbox");
@@ -453,14 +479,15 @@ async function startGallery(){
   $("scanbar").style.display = "flex";
   $("empty").style.display = "none";
   stream.innerHTML = ""; photos = []; rendered = 0;
+  if (io){ io.disconnect(); io = null; }
+  lastRefresh = 0; if (refreshTimer){ clearTimeout(refreshTimer); refreshTimer = null; }
   try {
-    photos = await scanDrive((n, f) => {
+    await scanDrive((n, f) => {
       $("scanText").textContent = "Scanning… " + n + " photos · " + f + " folders";
+      refreshTimeline(false);   // live preview of newest photos so far
     });
-    buildRenderQueue();
-    renderMore();
+    refreshTimeline(true);      // final sort + render, no throttle
     setupInfiniteScroll();
-    $("count").textContent = photos.length.toLocaleString() + " photos";
     $("scanbar").style.display = "none";
     if (!photos.length) $("empty").style.display = "block";
   } catch (e){
