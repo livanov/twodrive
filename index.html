@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0c0c0e" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Lumen" />
+<title>Lumen — OneDrive timeline</title>
+<link rel="manifest" href='data:application/json,{"name":"Lumen","short_name":"Lumen","display":"standalone","background_color":"%230c0c0e","theme_color":"%230c0c0e","start_url":"."}' />
+<style>
+  :root{
+    --bg:#0c0c0e; --surface:#16161a; --surface-2:#1f1f25;
+    --line:#2a2a31; --text:#f4f4f6; --muted:#9a9aa6; --faint:#65656f;
+    --accent:#5ea1ff; --accent-press:#2f7fe6; --danger:#ff6b6b;
+    --gap:3px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; overscroll-behavior-y:none;
+  }
+  button{font-family:inherit; cursor:pointer}
+  a{color:var(--accent)}
+
+  /* ---------- Centered screens (setup / connect / status) ---------- */
+  .screen{
+    min-height:100dvh; display:flex; align-items:center; justify-content:center;
+    padding:28px 20px calc(28px + env(safe-area-inset-bottom));
+  }
+  .card{
+    width:100%; max-width:440px; background:var(--surface);
+    border:1px solid var(--line); border-radius:20px; padding:28px 24px;
+  }
+  .wordmark{
+    display:flex; align-items:baseline; gap:10px; margin-bottom:4px;
+  }
+  .wordmark h1{
+    font-size:30px; margin:0; font-weight:680; letter-spacing:-0.03em;
+  }
+  .dot{width:11px;height:11px;border-radius:50%;
+    background:radial-gradient(circle at 30% 30%,#9ec5ff,var(--accent));
+    box-shadow:0 0 18px rgba(94,161,255,.55); transform:translateY(-2px)}
+  .tagline{color:var(--muted); font-size:14.5px; margin:0 0 22px; line-height:1.45}
+
+  label{display:block; font-size:12.5px; letter-spacing:.04em; text-transform:uppercase;
+    color:var(--faint); margin:0 0 7px; font-weight:600}
+  input[type=text]{
+    width:100%; padding:13px 14px; font-size:15px; color:var(--text);
+    background:var(--surface-2); border:1px solid var(--line); border-radius:12px;
+    outline:none; transition:border-color .15s;
+  }
+  input[type=text]:focus{border-color:var(--accent)}
+  input::placeholder{color:var(--faint)}
+
+  .btn{
+    width:100%; margin-top:16px; padding:14px; font-size:15.5px; font-weight:620;
+    color:#06223f; background:var(--accent); border:none; border-radius:12px;
+    transition:background .15s, transform .05s;
+  }
+  .btn:active{transform:scale(.99); background:var(--accent-press)}
+  .btn[disabled]{opacity:.5}
+  .btn.ghost{background:transparent; color:var(--muted); border:1px solid var(--line); font-weight:560}
+  .btn.ghost:active{background:var(--surface-2)}
+
+  .url-chip{
+    margin-top:6px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12.5px; color:var(--accent); background:var(--surface-2);
+    border:1px dashed var(--line); border-radius:10px; padding:10px 12px;
+    word-break:break-all; line-height:1.4;
+  }
+  .help{margin-top:20px; border-top:1px solid var(--line); padding-top:16px}
+  .help summary{cursor:pointer; color:var(--muted); font-size:14px; font-weight:600; list-style:none}
+  .help summary::-webkit-details-marker{display:none}
+  .help summary::before{content:"›"; display:inline-block; margin-right:8px;
+    transition:transform .2s; color:var(--faint)}
+  .help[open] summary::before{transform:rotate(90deg)}
+  .help ol{margin:14px 0 2px; padding-left:20px; color:var(--muted); font-size:14px; line-height:1.65}
+  .help li{margin-bottom:9px}
+  .help code{background:var(--surface-2); padding:1px 6px; border-radius:6px;
+    font-family:ui-monospace,Menlo,monospace; font-size:12.5px; color:var(--text)}
+  .note{font-size:13px; color:var(--faint); line-height:1.5; margin-top:14px}
+  .err{color:var(--danger); font-size:13.5px; margin-top:14px; line-height:1.5; display:none}
+
+  /* ---------- Gallery ---------- */
+  #gallery{display:none}
+  .topbar{
+    position:sticky; top:0; z-index:30; display:flex; align-items:center; gap:12px;
+    padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
+    background:rgba(12,12,14,.78); backdrop-filter:blur(14px);
+    border-bottom:1px solid var(--line);
+  }
+  .topbar .mark{font-weight:680; letter-spacing:-.02em; font-size:17px; display:flex; align-items:center; gap:8px}
+  .topbar .mark .dot{width:8px;height:8px;transform:none}
+  .count{color:var(--faint); font-size:13px; font-variant-numeric:tabular-nums}
+  .spacer{flex:1}
+  .icon-btn{
+    width:38px;height:38px;border-radius:10px;border:1px solid var(--line);
+    background:var(--surface); color:var(--muted); font-size:16px; display:grid; place-items:center;
+  }
+  .icon-btn:active{background:var(--surface-2)}
+
+  .month{
+    position:sticky; top:calc(58px + env(safe-area-inset-top)); z-index:10;
+    padding:18px 16px 8px; font-size:14px; font-weight:680; letter-spacing:-.01em;
+    color:var(--text); background:linear-gradient(var(--bg) 62%, transparent);
+  }
+  .grid{display:grid; grid-template-columns:repeat(3,1fr); gap:var(--gap); padding:0 var(--gap)}
+  @media(min-width:520px){.grid{grid-template-columns:repeat(4,1fr)}}
+  @media(min-width:760px){.grid{grid-template-columns:repeat(6,1fr)}}
+  @media(min-width:1100px){.grid{grid-template-columns:repeat(8,1fr)}}
+  .cell{position:relative; aspect-ratio:1/1; background:var(--surface);
+    overflow:hidden; border-radius:2px}
+  .cell img{width:100%;height:100%;object-fit:cover; display:block;
+    opacity:0; transition:opacity .35s ease}
+  .cell img.in{opacity:1}
+  .cell:active{filter:brightness(.8)}
+
+  #sentinel{height:1px}
+  .scanbar{
+    position:fixed; left:50%; bottom:calc(20px + env(safe-area-inset-bottom));
+    transform:translateX(-50%); z-index:40;
+    background:var(--surface); border:1px solid var(--line); border-radius:999px;
+    padding:9px 16px; font-size:13px; color:var(--muted); display:none; align-items:center; gap:9px;
+    box-shadow:0 8px 30px rgba(0,0,0,.5);
+  }
+  .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:p 1s infinite}
+  @keyframes p{0%,100%{opacity:.35}50%{opacity:1}}
+  .empty{display:none; text-align:center; color:var(--muted); padding:80px 30px; line-height:1.6}
+  .empty h2{color:var(--text); font-weight:640; margin:0 0 8px}
+
+  /* ---------- Lightbox ---------- */
+  #lightbox{
+    position:fixed; inset:0; z-index:100; background:#000; display:none;
+    align-items:center; justify-content:center; touch-action:pan-y;
+  }
+  #lightbox img{max-width:100%; max-height:100dvh; object-fit:contain; user-select:none}
+  .lb-close{position:absolute; top:calc(8px + env(safe-area-inset-top)); right:10px;
+    width:42px;height:42px;border-radius:50%;border:none;background:rgba(255,255,255,.12);
+    color:#fff; font-size:20px; backdrop-filter:blur(6px); z-index:2}
+  .lb-nav{position:absolute; top:0; bottom:0; width:34%; border:none; background:transparent; z-index:1}
+  .lb-prev{left:0} .lb-next{right:0}
+  .lb-meta{position:absolute; left:0; right:0; bottom:0; padding:16px 18px calc(18px + env(safe-area-inset-bottom));
+    background:linear-gradient(transparent,rgba(0,0,0,.7)); font-size:13px; color:#d6d6dd; z-index:2;
+    display:flex; justify-content:space-between; align-items:center; gap:12px}
+  .lb-meta a{color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.25);
+    padding:6px 12px; border-radius:8px; font-size:12.5px; white-space:nowrap}
+  @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<!-- SETUP / CONNECT -->
+<div class="screen" id="setup">
+  <div class="card">
+    <div class="wordmark"><h1>Lumen</h1><span class="dot"></span></div>
+    <p class="tagline">Every photo in your OneDrive, in one fast timeline.</p>
+
+    <label for="cid">OneDrive app client ID</label>
+    <input id="cid" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+           placeholder="00000000-0000-0000-0000-000000000000" />
+
+    <button class="btn" id="connectBtn">Connect OneDrive</button>
+    <button class="btn ghost" id="resetBtn" style="display:none">Use a different account / ID</button>
+    <p class="err" id="setupErr"></p>
+
+    <details class="help">
+      <summary>First time? Set up in ~5 minutes</summary>
+      <ol>
+        <li>Open <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Entra → App registrations</a> and tap <b>New registration</b>.</li>
+        <li>Name it anything. Under supported account types pick <b>Personal Microsoft accounts only</b>.</li>
+        <li>Add a Redirect URI: platform <b>Single-page application (SPA)</b>, value exactly:
+          <div class="url-chip" id="redirUri">—</div></li>
+        <li>Register, then copy the <b>Application (client) ID</b> and paste it above.</li>
+      </ol>
+      <p class="note">No secret, no payment, no API-permission setup needed — sign-in asks for read-only photo access (<code>Files.Read</code>) and nothing else. Your photos and login never leave your device; they go straight from OneDrive to your screen.</p>
+    </details>
+  </div>
+</div>
+
+<!-- GALLERY -->
+<div id="gallery">
+  <div class="topbar">
+    <span class="mark"><span class="dot"></span>Lumen</span>
+    <span class="count" id="count"></span>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="refreshBtn" title="Rescan">↻</button>
+    <button class="icon-btn" id="signoutBtn" title="Sign out">⏻</button>
+  </div>
+  <div id="stream"></div>
+  <div id="sentinel"></div>
+  <div class="empty" id="empty">
+    <h2>No photos found</h2>
+    Nothing with an image type turned up in this OneDrive.
+    If you just enabled OneDrive camera backup, give it time to upload, then tap ↻.
+  </div>
+</div>
+
+<div class="scanbar" id="scanbar"><span class="pulse"></span><span id="scanText">Scanning…</span></div>
+
+<!-- LIGHTBOX -->
+<div id="lightbox">
+  <button class="lb-close" id="lbClose">✕</button>
+  <button class="lb-nav lb-prev" id="lbPrev" aria-label="Previous"></button>
+  <button class="lb-nav lb-next" id="lbNext" aria-label="Next"></button>
+  <img id="lbImg" alt="" />
+  <div class="lb-meta"><span id="lbName"></span><a id="lbDl" download>Download</a></div>
+</div>
+
+<script>
+/* ============================================================
+   Lumen — a unified OneDrive photo timeline (single file PWA)
+   Auth: MSAL.js (PKCE, no secret).  Data: Microsoft Graph.
+   ============================================================ */
+
+const SCOPES = ["Files.Read", "User.Read"];
+const GRAPH = "https://graph.microsoft.com/v1.0";
+// Exact page URL = the Redirect URI you register in Azure.
+const REDIRECT_URI = location.href.split("#")[0].split("?")[0];
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* localStorage that won't crash inside sandboxed previews */
+function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
+
+let pca = null;          // MSAL instance
+let photos = [];         // {id,name,date,thumb,large,download}
+
+/* ---- Load MSAL with CDN fallbacks (robust when self-hosted) ---- */
+function loadMsal(){
+  if (window.msal) return Promise.resolve();
+  const cdns = [
+    "https://cdnjs.cloudflare.com/ajax/libs/msal-browser/3.10.0/msal-browser.min.js",
+    "https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js",
+    "https://unpkg.com/@azure/msal-browser@3.10.0/lib/msal-browser.min.js",
+  ];
+  return new Promise((resolve, reject) => {
+    let i = 0;
+    const tryNext = () => {
+      if (i >= cdns.length) return reject(new Error("Couldn't load the sign-in library."));
+      const s = document.createElement("script");
+      s.src = cdns[i++];
+      s.onload = () => resolve();
+      s.onerror = tryNext;
+      document.head.appendChild(s);
+    };
+    tryNext();
+  });
+}
+
+function makePca(clientId){
+  return new msal.PublicClientApplication({
+    auth: {
+      clientId,
+      authority: "https://login.microsoftonline.com/consumers",
+      redirectUri: REDIRECT_URI,
+    },
+    cache: { cacheLocation: "localStorage" },
+  });
+}
+
+/* ---- Token (silent, with redirect fallback) ---- */
+async function getToken(){
+  const req = { scopes: SCOPES, account: pca.getActiveAccount() };
+  try {
+    return (await pca.acquireTokenSilent(req)).accessToken;
+  } catch (e) {
+    await pca.acquireTokenRedirect(req);   // navigates away
+    throw e;
+  }
+}
+
+/* ---- Graph GET with throttle + 401 token-refresh handling ---- */
+let _token = null;
+async function graphGet(url, tries = 0){
+  if (!_token) _token = await getToken();
+  const r = await fetch(url, { headers: { Authorization: "Bearer " + _token } });
+  if (r.status === 401 && tries < 1){ _token = await getToken(); return graphGet(url, tries+1); }
+  if (r.status === 429 && tries < 6){
+    await sleep((parseInt(r.headers.get("Retry-After") || "2", 10)) * 1000);
+    return graphGet(url, tries+1);
+  }
+  if (!r.ok) throw new Error("Graph " + r.status + ": " + (await r.text()).slice(0,160));
+  return r.json();
+}
+
+/* ---- List one folder's children (with thumbnails), following paging ---- */
+async function listChildren(id){
+  let url = (id === "root"
+    ? GRAPH + "/me/drive/root/children"
+    : GRAPH + "/me/drive/items/" + id + "/children")
+    + "?$top=200&$expand=thumbnails";
+  const out = [];
+  while (url){
+    const data = await graphGet(url);
+    if (data.value) out.push(...data.value);
+    url = data["@odata.nextLink"] || null;
+  }
+  return out;
+}
+
+/* ---- Run an async fn over items with limited concurrency ---- */
+async function pool(items, fn, conc){
+  const out = []; let i = 0;
+  const run = async () => { while (i < items.length){ const k = i++; out[k] = await fn(items[k]); } };
+  await Promise.all(Array.from({length: Math.min(conc, items.length || 1)}, run));
+  return out;
+}
+
+/* ---- Walk the whole drive, breadth-first, collecting images ---- */
+async function scanDrive(onProgress){
+  const found = [];
+  let frontier = ["root"], folders = 0;
+  while (frontier.length){
+    const batches = await pool(frontier, listChildren, 4);
+    const next = [];
+    for (const children of batches){
+      for (const it of children){
+        if (it.folder){
+          if ((it.folder.childCount ?? 1) > 0) next.push(it.id);
+        } else if (it.file && (it.image || (it.file.mimeType || "").startsWith("image/"))){
+          const t = (it.thumbnails && it.thumbnails[0]) || null;
+          found.push({
+            id: it.id,
+            name: it.name,
+            date: (it.photo && it.photo.takenDateTime)
+                  || (it.fileSystemInfo && it.fileSystemInfo.createdDateTime)
+                  || it.lastModifiedDateTime,
+            thumb: t ? (t.medium && t.medium.url) || (t.small && t.small.url) : null,
+            large: t ? (t.large && t.large.url) || (t.medium && t.medium.url) : null,
+            download: it["@microsoft.graph.downloadUrl"] || null,
+          });
+        }
+      }
+    }
+    folders += frontier.length;
+    onProgress(found.length, folders);
+    frontier = next;
+  }
+  return found.filter(p => p.thumb);
+}
+
+/* ============================ Rendering ============================ */
+const stream = $("stream");
+let renderQueue = [];   // flat list of {type:'month'|'photo', ...}
+let rendered = 0;
+const BATCH = 90;
+let io;
+
+const monthLabel = (d) => {
+  const dt = new Date(d);
+  return isNaN(dt) ? "Undated"
+    : dt.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+};
+
+function buildRenderQueue(){
+  photos.sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+  renderQueue = []; let lastM = null; let curGrid = null;
+  for (const p of photos){
+    const m = monthLabel(p.date);
+    if (m !== lastM){ renderQueue.push({ type:"month", label:m }); lastM = m; }
+    renderQueue.push({ type:"photo", p });
+  }
+}
+
+function renderMore(){
+  const frag = document.createDocumentFragment();
+  let grid = stream.lastElementChild && stream.lastElementChild.classList.contains("grid")
+             ? stream.lastElementChild : null;
+  const end = Math.min(rendered + BATCH, renderQueue.length);
+  for (; rendered < end; rendered++){
+    const item = renderQueue[rendered];
+    if (item.type === "month"){
+      const h = document.createElement("div"); h.className = "month"; h.textContent = item.label;
+      frag.appendChild(h);
+      grid = document.createElement("div"); grid.className = "grid";
+      frag.appendChild(grid);
+    } else {
+      if (!grid){ grid = document.createElement("div"); grid.className = "grid"; frag.appendChild(grid); }
+      grid.appendChild(makeCell(item.p));
+    }
+  }
+  stream.appendChild(frag);
+  if (rendered >= renderQueue.length && io){ io.disconnect(); io = null; }
+}
+
+function makeCell(p){
+  const c = document.createElement("div"); c.className = "cell";
+  const img = document.createElement("img");
+  img.loading = "lazy"; img.decoding = "async"; img.referrerPolicy = "no-referrer";
+  img.src = p.thumb;
+  img.onload = () => img.classList.add("in");
+  c.appendChild(img);
+  c.addEventListener("click", () => openLightbox(p));
+  return c;
+}
+
+function setupInfiniteScroll(){
+  if (io) io.disconnect();
+  io = new IntersectionObserver((e) => { if (e[0].isIntersecting) renderMore(); },
+        { rootMargin: "800px" });
+  io.observe($("sentinel"));
+}
+
+/* ============================ Lightbox ============================ */
+let lbIndex = -1;
+const lb = $("lightbox");
+function openLightbox(p){
+  lbIndex = photos.indexOf(p);
+  showLb();
+  lb.style.display = "flex";
+  document.body.style.overflow = "hidden";
+}
+function showLb(){
+  const p = photos[lbIndex]; if (!p) return;
+  const img = $("lbImg");
+  img.src = p.large || p.download || p.thumb;
+  $("lbName").textContent = p.name || "";
+  const dl = $("lbDl");
+  if (p.download){ dl.href = p.download; dl.style.display = ""; } else { dl.style.display = "none"; }
+}
+function closeLb(){ lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1; }
+function step(d){ lbIndex = (lbIndex + d + photos.length) % photos.length; showLb(); }
+$("lbClose").onclick = closeLb;
+$("lbPrev").onclick = () => step(-1);
+$("lbNext").onclick = () => step(1);
+document.addEventListener("keydown", (e) => {
+  if (lb.style.display !== "flex") return;
+  if (e.key === "Escape") closeLb();
+  if (e.key === "ArrowRight") step(1);
+  if (e.key === "ArrowLeft") step(-1);
+});
+let touchX = null;
+lb.addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; }, {passive:true});
+lb.addEventListener("touchend", (e) => {
+  if (touchX === null) return;
+  const dx = e.changedTouches[0].clientX - touchX;
+  if (Math.abs(dx) > 55) step(dx < 0 ? 1 : -1);
+  touchX = null;
+});
+
+/* ============================ Flow ============================ */
+function show(id){ ["setup","gallery"].forEach(s => $(s).style.display = (s===id ? (id==="gallery"?"block":"flex") : "none")); }
+
+async function startGallery(){
+  show("gallery");
+  $("scanbar").style.display = "flex";
+  $("empty").style.display = "none";
+  stream.innerHTML = ""; photos = []; rendered = 0;
+  try {
+    photos = await scanDrive((n, f) => {
+      $("scanText").textContent = "Scanning… " + n + " photos · " + f + " folders";
+    });
+    buildRenderQueue();
+    renderMore();
+    setupInfiniteScroll();
+    $("count").textContent = photos.length.toLocaleString() + " photos";
+    $("scanbar").style.display = "none";
+    if (!photos.length) $("empty").style.display = "block";
+  } catch (e){
+    $("scanbar").style.display = "none";
+    $("empty").style.display = "block";
+    $("empty").innerHTML = "<h2>Couldn't load photos</h2>" + String(e.message || e);
+  }
+}
+
+async function bootWithClientId(clientId){
+  await loadMsal();
+  pca = makePca(clientId);
+  await pca.initialize();
+  const resp = await pca.handleRedirectPromise();
+  const acct = (resp && resp.account) || pca.getAllAccounts()[0];
+  if (acct){ pca.setActiveAccount(acct); startGallery(); return true; }
+  return false;   // signed out → caller shows connect
+}
+
+/* ---- Setup screen wiring ---- */
+$("redirUri").textContent = REDIRECT_URI;
+$("connectBtn").onclick = async () => {
+  const cid = $("cid").value.trim();
+  $("setupErr").style.display = "none";
+  if (!/^[0-9a-f-]{30,40}$/i.test(cid)){
+    $("setupErr").textContent = "That doesn't look like a client ID. Copy the Application (client) ID from your Azure app registration.";
+    $("setupErr").style.display = "block"; return;
+  }
+  $("connectBtn").disabled = true; $("connectBtn").textContent = "Connecting…";
+  lsSet("lumen_cid", cid);
+  try {
+    await loadMsal();
+    pca = makePca(cid);
+    await pca.initialize();
+    await pca.loginRedirect({ scopes: SCOPES });   // navigates to Microsoft sign-in
+  } catch (e){
+    $("connectBtn").disabled = false; $("connectBtn").textContent = "Connect OneDrive";
+    $("setupErr").textContent = "Sign-in couldn't start here. This usually means the page isn't hosted yet — see the setup steps below. (" + (e.message||e) + ")";
+    $("setupErr").style.display = "block";
+  }
+};
+$("resetBtn").onclick = async () => {
+  lsDel("lumen_cid");
+  try { if (pca){ const a = pca.getActiveAccount(); if (a) await pca.logoutRedirect({ account:a }); } } catch(e){}
+  location.reload();
+};
+$("refreshBtn").onclick = startGallery;
+$("signoutBtn").onclick = $("resetBtn").onclick;
+
+/* ---- Boot ---- */
+(async () => {
+  const saved = lsGet("lumen_cid");
+  if (saved){
+    $("cid").value = saved;
+    $("resetBtn").style.display = "block";
+    try {
+      const ok = await bootWithClientId(saved);
+      if (!ok){ show("setup"); }   // saved ID but signed out → let them connect
+    } catch (e){
+      show("setup");
+      $("setupErr").textContent = "Couldn't restore your session: " + (e.message||e);
+      $("setupErr").style.display = "block";
+    }
+  } else {
+    show("setup");
+  }
+})();
+</script>
+</body>
+</html>
