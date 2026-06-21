@@ -232,6 +232,14 @@ function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
 let pca = null;          // MSAL instance
 let photos = [];         // {id,name,date,thumb,large,download}
 let deltaLink = null;    // Graph delta token for incremental rescans
+let excludedPaths = [];  // folder paths carrying a .nomedia (and thus skipped)
+
+/* A driveItem path is excluded if it equals, or sits under, a .nomedia folder. */
+function isExcluded(path){
+  if (!path) return false;
+  for (const p of excludedPaths){ if (path === p || path.startsWith(p + "/")) return true; }
+  return false;
+}
 
 /* ---- IndexedDB: cache the photo list so launches skip the full scan ---- */
 const DB_NAME = "lumen", STORE = "cache";
@@ -267,8 +275,8 @@ async function idbSet(key, val){
 async function persistCache(){
   if (!cacheKey) return;
   const lean = photos.map(p => ({ id:p.id, name:p.name, date:p.date,
-    thumb:p.thumb, large:p.large, download:p.download }));
-  await idbSet(cacheKey, { photos: lean, deltaLink, savedAt: Date.now() });
+    thumb:p.thumb, large:p.large, download:p.download, path:p.path }));
+  await idbSet(cacheKey, { photos: lean, deltaLink, excludedPaths, savedAt: Date.now() });
 }
 let _savedOnce = false;
 function scheduleSave(){
@@ -399,6 +407,13 @@ async function scanDrive(onProgress){
     const batches = await pool(frontier, listChildren, 3);
     const next = [];
     for (const children of batches){
+      // Honor Android's .nomedia: skip this folder's images and, by not
+      // queueing its subfolders below, everything beneath it too.
+      if (children.some(it => it.file && (it.name || "").toLowerCase() === ".nomedia")){
+        const ref = children[0] && children[0].parentReference;
+        if (ref && ref.path && !excludedPaths.includes(ref.path)) excludedPaths.push(ref.path);
+        continue;
+      }
       for (const it of children){
         if (it.folder){
           if ((it.folder.childCount ?? 1) > 0) next.push(it.id);
@@ -415,6 +430,7 @@ async function scanDrive(onProgress){
             thumb,
             large: (t.large && t.large.url) || (t.medium && t.medium.url) || thumb,
             download: it["@microsoft.graph.downloadUrl"] || null,
+            path: (it.parentReference && it.parentReference.path) || null,
           });
         }
       }
@@ -438,13 +454,14 @@ function toRecord(it, prev){
     thumb: (t && ((t.medium && t.medium.url) || (t.small && t.small.url))) || prev.thumb || null,
     large: (t && ((t.large && t.large.url) || (t.medium && t.medium.url))) || prev.large || null,
     download: it["@microsoft.graph.downloadUrl"] || prev.download || null,
+    path: (it.parentReference && it.parentReference.path) || prev.path || null,
   };
 }
 
 /* ---- Full first-time scan: proven folder walk, then snapshot a delta
    token so subsequent launches only fetch changes. ---- */
 async function fullScan(onProgress){
-  photos = []; rendered = 0; _listReqs = 0;   // start with small pages again
+  photos = []; rendered = 0; _listReqs = 0; excludedPaths = [];   // rediscover .nomedia folders
   await scanDrive(onProgress);
   try {
     const d = await graphGet(GRAPH + "/me/drive/root/delta?token=latest");
@@ -461,6 +478,12 @@ async function deltaSync(onProgress){
   while (url){
     const data = await graphGet(url);
     for (const it of (data.value || [])){
+      // A newly-added .nomedia marks its folder (and below) as excluded.
+      if (it.file && (it.name || "").toLowerCase() === ".nomedia"){
+        const ref = it.parentReference;
+        if (ref && ref.path && !excludedPaths.includes(ref.path)) excludedPaths.push(ref.path);
+        continue;
+      }
       if (it.deleted){
         if (byId.delete(it.id)){ removed++; cellCache.delete(it.id); }
         continue;
@@ -477,7 +500,14 @@ async function deltaSync(onProgress){
     else { deltaLink = data["@odata.deltaLink"] || deltaLink; url = null; }
     onProgress && onProgress(byId.size);
   }
-  photos = [...byId.values()];
+  // Drop anything under a .nomedia folder (handles ordering + folders newly
+  // excluded this sync).
+  const before = byId.size;
+  photos = [...byId.values()].filter(p => {
+    if (isExcluded(p.path)){ cellCache.delete(p.id); return false; }
+    return true;
+  });
+  removed += before - photos.length;
   return { changed, removed };
 }
 
@@ -649,7 +679,7 @@ function show(id){ ["setup","gallery"].forEach(s => $(s).style.display = (s===id
 async function startGallery(force){
   show("gallery");
   $("empty").style.display = "none";
-  stream.innerHTML = ""; photos = []; rendered = 0; deltaLink = null; cellCache.clear();
+  stream.innerHTML = ""; photos = []; rendered = 0; deltaLink = null; excludedPaths = []; cellCache.clear();
   if (io){ io.disconnect(); io = null; }
   lastRefresh = 0; if (refreshTimer){ clearTimeout(refreshTimer); refreshTimer = null; }
 
@@ -662,6 +692,7 @@ async function startGallery(force){
   if (cached && cached.photos && cached.photos.length){
     photos = cached.photos;
     deltaLink = cached.deltaLink || null;
+    excludedPaths = cached.excludedPaths || [];
     refreshTimeline(true);
     setupInfiniteScroll();
     haveCache = true;
