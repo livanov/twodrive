@@ -120,6 +120,9 @@
     opacity:0; transition:opacity .35s ease}
   .cell img.in{opacity:1}
   .cell:active{filter:brightness(.8)}
+  .cell .src{position:absolute; right:3px; bottom:3px; width:15px; height:15px;
+    opacity:.92; pointer-events:none; filter:drop-shadow(0 1px 2px rgba(0,0,0,.7))}
+  .cell .src svg{width:100%; height:100%; display:block; fill:#fff}
 
   #sentinel{height:1px}
   .scanbar{
@@ -159,27 +162,24 @@
 <div class="screen" id="setup">
   <div class="card">
     <div class="wordmark"><h1>Lumen</h1><span class="dot"></span></div>
-    <p class="tagline">Every photo in your OneDrive, in one fast timeline.</p>
-
-    <label for="cid">OneDrive app client ID</label>
-    <input id="cid" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
-           placeholder="00000000-0000-0000-0000-000000000000" />
+    <p class="tagline">Every photo in your OneDrive — and on this device — in one fast timeline.</p>
 
     <button class="btn" id="connectBtn">Connect OneDrive</button>
+    <button class="btn ghost" id="localBtn">📱 Browse photos on this device</button>
     <button class="btn ghost" id="installBtn" style="display:none">⤓ Install app on this device</button>
     <button class="btn ghost" id="resetBtn" style="display:none">Use a different account / ID</button>
     <p class="err" id="setupErr"></p>
 
-    <details class="help">
-      <summary>First time? Set up in ~5 minutes</summary>
-      <ol>
-        <li>Open <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Entra → App registrations</a> and tap <b>New registration</b>.</li>
-        <li>Name it anything. Under supported account types pick <b>Personal Microsoft accounts only</b>.</li>
-        <li>Add a Redirect URI: platform <b>Single-page application (SPA)</b>, value exactly:
-          <div class="url-chip" id="redirUri">—</div></li>
-        <li>Register, then copy the <b>Application (client) ID</b> and paste it above.</li>
-      </ol>
-      <p class="note">No secret, no payment, no API-permission setup needed — sign-in asks for read-only photo access (<code>Files.Read</code>) and nothing else. Your photos and login never leave your device; they go straight from OneDrive to your screen.</p>
+    <details class="help" id="advanced">
+      <summary>Advanced</summary>
+      <label for="cid" style="margin-top:14px">OneDrive app client ID</label>
+      <input id="cid" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="00000000-0000-0000-0000-000000000000" />
+      <p class="note">A built-in app is used by default. Paste your own client ID only if you registered one. To create one: open
+        <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Entra → App registrations</a>,
+        add a <b>Single-page application (SPA)</b> redirect URI of exactly
+        <span class="url-chip" id="redirUri">—</span>, choose <b>Personal Microsoft accounts only</b>, and copy the
+        <b>Application (client) ID</b>. Sign-in is read-only (<code>Files.Read</code>); your photos and login never leave your device.</p>
     </details>
   </div>
 </div>
@@ -190,10 +190,12 @@
     <span class="mark"><span class="dot"></span>Lumen</span>
     <span class="count" id="count"></span>
     <span class="spacer"></span>
+    <button class="icon-btn" id="localBtn2" title="Add photos from this device">📱</button>
     <button class="icon-btn" id="installBtn2" title="Install app" style="display:none">⤓</button>
     <button class="icon-btn" id="refreshBtn" title="Rescan">↻</button>
     <button class="icon-btn" id="signoutBtn" title="Sign out">⏻</button>
   </div>
+  <input type="file" id="localInput" accept="image/*" multiple webkitdirectory style="display:none" />
   <div id="stream"></div>
   <div id="sentinel"></div>
   <div class="empty" id="empty">
@@ -240,6 +242,9 @@ let pca = null;          // MSAL instance
 let photos = [];         // {id,name,date,thumb,large,download}
 let deltaLink = null;    // Graph delta token for incremental rescans
 let excludedPaths = [];  // folder paths carrying a .nomedia (and thus skipped)
+let localPhotos = [];    // photos read from this device {source:"local"}
+let localSeen = new Set();// dedupe key (name|size) for local files already added
+let view = [];           // deduped + sorted union of OneDrive + local, used for render/lightbox
 
 /* A driveItem path is excluded if it equals, or sits under, a .nomedia folder. */
 function isExcluded(path){
@@ -441,6 +446,8 @@ async function scanDrive(onProgress){
             large: (t.large && t.large.url) || (t.medium && t.medium.url) || thumb,
             download: it["@microsoft.graph.downloadUrl"] || null,
             path: (it.parentReference && it.parentReference.path) || null,
+            size: it.size ?? null,
+            source: "onedrive",
           });
         }
       }
@@ -465,6 +472,8 @@ function toRecord(it, prev){
     large: (t && ((t.large && t.large.url) || (t.medium && t.medium.url))) || prev.large || null,
     download: it["@microsoft.graph.downloadUrl"] || prev.download || null,
     path: (it.parentReference && it.parentReference.path) || prev.path || null,
+    size: it.size ?? prev.size ?? null,
+    source: "onedrive",
   };
 }
 
@@ -551,10 +560,22 @@ const monthLabel = (d) => {
     : dt.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 };
 
+/* Merge OneDrive + local into one list, collapsing duplicates (same file
+   synced both places) by name+size. Local wins so synced photos show
+   instantly from the device rather than over the network. */
+function buildView(){
+  const dkey = (p) => (p.name || "").toLowerCase() + "|" + (p.size == null ? "?" : p.size);
+  const seen = new Map();
+  for (const p of photos){ const k = dkey(p); if (!seen.has(k)) seen.set(k, p); }
+  for (const p of localPhotos){ seen.set(dkey(p), p); }   // local overrides OneDrive dup
+  view = [...seen.values()];
+  view.sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
+}
+
 function buildRenderQueue(){
-  photos.sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
-  renderQueue = []; let lastM = null; let curGrid = null;
-  for (const p of photos){
+  buildView();
+  renderQueue = []; let lastM = null;
+  for (const p of view){
     const m = monthLabel(p.date);
     if (m !== lastM){ renderQueue.push({ type:"month", label:m }); lastM = m; }
     renderQueue.push({ type:"photo", p });
@@ -606,12 +627,20 @@ function makeCell(p){
     resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
   };
   if (p.thumb) img.src = p.thumb;
-  else resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
+  else if (p.source !== "local") resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
   c.appendChild(img);
+  const badge = document.createElement("div");
+  badge.className = "src";
+  badge.title = p.source === "local" ? "On this device" : "From OneDrive";
+  badge.innerHTML = p.source === "local" ? ICON_PHONE : ICON_CLOUD;
+  c.appendChild(badge);
   c.addEventListener("click", () => openLightbox(p));
   cellCache.set(p.id, c);
   return c;
 }
+
+const ICON_CLOUD = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 18H6a4 4 0 0 1-.4-7.98A6 6 0 0 1 17.6 9.2 3.5 3.5 0 0 1 19 18z"/></svg>';
+const ICON_PHONE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm0 3v12h10V5H7zm5 13.2a1 1 0 1 0 0 2 1 1 0 0 0 0-2z"/></svg>';
 
 function setupInfiniteScroll(){
   if (io) return;   // set up once; #sentinel lives outside #stream so it survives rebuilds
@@ -644,32 +673,33 @@ function refreshTimeline(force){
   while (rendered < keep) renderMore();   // re-render what was visible (cells reused from cache)
   topUp();                                // fill the viewport with any newly-found photos
   setupInfiniteScroll();                  // idempotent; keep scroll alive during the scan
-  $("count").textContent = photos.length.toLocaleString() + " photos";
+  $("count").textContent = view.length.toLocaleString() + " photos";
 }
 
 /* ============================ Lightbox ============================ */
 let lbIndex = -1;
 const lb = $("lightbox");
 function openLightbox(p){
-  lbIndex = photos.indexOf(p);
+  lbIndex = view.indexOf(p);
   showLb();
   lb.style.display = "flex";
   document.body.style.overflow = "hidden";
 }
 function showLb(){
-  const p = photos[lbIndex]; if (!p) return;
+  const p = view[lbIndex]; if (!p) return;
   const img = $("lbImg");
   img.src = p.large || p.download || p.thumb || "";
   $("lbName").textContent = p.name || "";
   const dl = $("lbDl");
-  if (p.download){ dl.href = p.download; dl.style.display = ""; } else { dl.style.display = "none"; }
+  if (p.download){ dl.href = p.download; dl.download = p.name || ""; dl.style.display = ""; } else { dl.style.display = "none"; }
+  if (p.source === "local") return;   // local files already carry blob URLs
   // Upgrade to a full-size image and (re)resolve the download link if missing.
-  if (!p.large) resolveThumb(p).then(() => { if (photos[lbIndex] === p && p.large) img.src = p.large; });
+  if (!p.large) resolveThumb(p).then(() => { if (view[lbIndex] === p && p.large) img.src = p.large; });
   if (!p.download){
     graphGet(GRAPH + "/me/drive/items/" + p.id + "?$select=@microsoft.graph.downloadUrl")
       .then(d => {
         p.download = d["@microsoft.graph.downloadUrl"] || null;
-        if (photos[lbIndex] === p && p.download){
+        if (view[lbIndex] === p && p.download){
           dl.href = p.download; dl.style.display = "";
           if (!p.large && !img.src) img.src = p.download;
           scheduleSave();
@@ -678,7 +708,7 @@ function showLb(){
   }
 }
 function closeLb(){ lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1; }
-function step(d){ lbIndex = (lbIndex + d + photos.length) % photos.length; showLb(); }
+function step(d){ lbIndex = (lbIndex + d + view.length) % view.length; showLb(); }
 $("lbClose").onclick = closeLb;
 $("lbPrev").onclick = () => step(-1);
 $("lbNext").onclick = () => step(1);
@@ -696,6 +726,70 @@ lb.addEventListener("touchend", (e) => {
   if (Math.abs(dx) > 55) step(dx < 0 ? 1 : -1);
   touchX = null;
 });
+
+/* ====================== Local device photos ====================== */
+const IMG_RE = /\.(jpe?g|png|gif|webp|bmp|avif|heic|heif)$/i;
+
+/* Best-effort capture date: parse a YYYYMMDD in the filename (camera
+   naming), else fall back to the file's last-modified time. */
+function dateFromName(name, lastModified){
+  const m = (name || "").match(/(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)/);
+  if (m){
+    const mo = +m[2], da = +m[3];
+    if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31){
+      const d = new Date(+m[1], mo - 1, da);
+      if (!isNaN(d)) return d.toISOString();
+    }
+  }
+  return new Date(lastModified || Date.now()).toISOString();
+}
+
+function addLocalFiles(files){
+  let added = 0;
+  for (const f of files){
+    if (!(/^image\//.test(f.type) || IMG_RE.test(f.name))) continue;
+    const key = (f.name || "").toLowerCase() + "|" + f.size;
+    if (localSeen.has(key)) continue;
+    localSeen.add(key);
+    const url = URL.createObjectURL(f);
+    localPhotos.push({
+      id: "local:" + key, name: f.name, size: f.size, source: "local",
+      date: dateFromName(f.name, f.lastModified),
+      thumb: url, large: url, download: url,
+    });
+    added++;
+  }
+  if (added){ show("gallery"); refreshTimeline(true); }
+  return added;
+}
+
+async function walkDir(handle, out, depth){
+  for await (const entry of handle.values()){
+    if (entry.kind === "file"){
+      if (IMG_RE.test(entry.name)){ try { out.push(await entry.getFile()); } catch(e){} }
+    } else if (entry.kind === "directory" && depth < 10){
+      // skip Android's hidden / no-media-style folders
+      if (entry.name.startsWith(".")) continue;
+      await walkDir(entry, out, depth + 1);
+    }
+  }
+}
+
+async function browseLocal(){
+  // Preferred: File System Access API (lets us walk a whole folder).
+  if (window.showDirectoryPicker){
+    try {
+      const handle = await window.showDirectoryPicker();
+      $("scanbar").style.display = "flex"; $("scanText").textContent = "Reading device photos…";
+      const out = []; await walkDir(handle, out, 0);
+      const n = addLocalFiles(out);
+      $("scanbar").style.display = "none";
+      if (!n) alert("No images found in that folder.");
+      return;
+    } catch(e){ if (e && e.name === "AbortError") return; /* fall through to input */ }
+  }
+  $("localInput").click();   // fallback: folder/file picker
+}
 
 /* ============================ Flow ============================ */
 function show(id){ ["setup","gallery"].forEach(s => $(s).style.display = (s===id ? (id==="gallery"?"block":"flex") : "none")); }
@@ -802,6 +896,15 @@ $("resetBtn").onclick = async () => {
 };
 $("refreshBtn").onclick = () => startGallery(true);   // full rescan, ignore cache
 $("signoutBtn").onclick = $("resetBtn").onclick;
+
+/* ---- Local device photos wiring ---- */
+$("localBtn").onclick = browseLocal;
+$("localBtn2").onclick = browseLocal;
+$("localInput").onchange = (e) => {
+  const n = addLocalFiles(e.target.files || []);
+  e.target.value = "";   // allow re-picking the same folder
+  if (!n) alert("No images found in that selection.");
+};
 
 /* ---- PWA: service worker + install prompt ---- */
 if ("serviceWorker" in navigator){
