@@ -222,6 +222,9 @@
 
 const SCOPES = ["Files.Read", "User.Read"];
 const GRAPH = "https://graph.microsoft.com/v1.0";
+// Pre-registered app so users don't have to create their own. A saved ID in
+// localStorage (entered manually) still wins over this default.
+const DEFAULT_CID = "4bbab2fe-8d63-4ca9-9f41-184d96b38f01";
 // Exact page URL = the Redirect URI you register in Azure.
 const REDIRECT_URI = location.href.split("#")[0].split("?")[0];
 
@@ -826,20 +829,16 @@ window.addEventListener("appinstalled", () => { installEvent = null; showInstall
 
 /* ---- Boot ---- */
 (async () => {
-  const saved = lsGet("lumen_cid");
-  if (saved){
-    $("cid").value = saved;
-    $("resetBtn").style.display = "block";
-    try {
-      const ok = await bootWithClientId(saved);
-      if (!ok){ show("setup"); }   // saved ID but signed out → let them connect
-    } catch (e){
-      show("setup");
-      $("setupErr").textContent = "Couldn't restore your session: " + (e.message||e);
-      $("setupErr").style.display = "block";
-    }
-  } else {
+  const saved = lsGet("lumen_cid") || DEFAULT_CID;   // fall back to the built-in app
+  $("cid").value = saved;
+  if (lsGet("lumen_cid")) $("resetBtn").style.display = "block";
+  try {
+    const ok = await bootWithClientId(saved);
+    if (!ok){ show("setup"); }   // have an ID but signed out → let them connect
+  } catch (e){
     show("setup");
+    $("setupErr").textContent = "Couldn't restore your session: " + (e.message||e);
+    $("setupErr").style.display = "block";
   }
 })();
 </script>
