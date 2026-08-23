@@ -116,7 +116,7 @@ test("61 · the scan chip says what is happening, and goes away when nothing is"
       undefined, { timeout: 10000, polling: 50 });
     /* and then it hides itself */
     await app.page.waitForFunction(
-      () => getComputedStyle(document.getElementById("scanbar")).display === "none",
+      () => !document.getElementById("scanText").classList.contains("on"),
       undefined, { timeout: 10000, polling: 100 });
     assert.eq(await app.page.evaluate(() => scanning), false, "scanning flag stuck on");
   } finally { await app.close(); }

@@ -183,9 +183,10 @@ test("10b · the scan bar hides itself a few seconds after completion", async ()
   try {
     await app.goto();
     await app.waitForScan();
-    assert.eq(await app.visible("scanbar"), true, "scan bar should still be up right after completion");
+    assert.eq(await app.page.evaluate(() => document.getElementById("scanText").classList.contains("on")), true,
+      "the status should still be up right after completion");
     await app.page.waitForFunction(
-      () => getComputedStyle(document.getElementById("scanbar")).display === "none",
+      () => !document.getElementById("scanText").classList.contains("on"),
       undefined, { timeout: 6000, polling: 100 });
   } finally { await app.close(); }
 }, { timeout: 30000 });
