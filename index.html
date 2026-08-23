@@ -135,8 +135,30 @@
   .btn svg{width:16px; height:16px; vertical-align:-3px; margin-right:7px; fill:none;
     stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
 
+  /* ---------- Tabs ---------- */
+  .tabs{position:sticky; top:calc(57px + env(safe-area-inset-top)); z-index:20;
+    display:flex; gap:6px; padding:8px 12px;
+    background:rgba(12,12,14,.9); backdrop-filter:blur(14px);
+    border-bottom:1px solid var(--line)}
+  .tab{flex:0 0 auto; padding:8px 16px; border-radius:999px; font-size:14px; font-weight:560;
+    color:var(--muted); background:transparent; border:1px solid var(--line)}
+  .tab.on{color:#06223f; background:var(--accent); border-color:var(--accent); font-weight:640}
+
+  /* ---------- Albums ---------- */
+  #albums{padding:8px 12px 40px}
+  .album{display:flex; align-items:center; gap:13px; padding:9px 6px; border-radius:12px}
+  .album:active{background:var(--surface-2)}
+  .album .cover{width:58px; height:58px; border-radius:10px; flex:none; object-fit:cover;
+    background:var(--surface-2); display:block}
+  .album .cover.ph{display:grid; place-items:center; color:var(--faint); font-size:20px}
+  .album .txt{min-width:0; flex:1}
+  .album .t{font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .album .s{font-size:12.5px; color:var(--faint); margin-top:2px}
+  .albums-msg{padding:60px 26px; text-align:center; color:var(--muted); line-height:1.6}
+  .albums-msg h3{color:var(--text); margin:0 0 8px; font-weight:640}
+
   .month{
-    position:sticky; top:calc(58px + env(safe-area-inset-top)); z-index:10;
+    position:sticky; top:calc(99px + env(safe-area-inset-top)); z-index:10;
     padding:18px 16px 8px; font-size:14px; font-weight:680; letter-spacing:-.01em;
     color:var(--text); background:linear-gradient(var(--bg) 62%, transparent);
   }
@@ -353,6 +375,13 @@
       <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg></span>Sign out</button>
   </div>
   <input type="file" id="localInput" accept="image/*" multiple webkitdirectory style="display:none" />
+
+  <div class="tabs" role="tablist">
+    <button class="tab on" id="tabTimeline" role="tab" aria-selected="true">Timeline</button>
+    <button class="tab" id="tabAlbums" role="tab" aria-selected="false">Albums</button>
+  </div>
+
+  <div id="albums" style="display:none"></div>
   <div id="stream"></div>
   <div id="sentinel"></div>
   <div class="empty" id="empty">
@@ -1544,6 +1573,13 @@ async function startGallery(force){
   refreshTimeline(true);
   setupInfiniteScroll();
   loadAccountInfo();   // fills the menu header (name, email, picture)
+  // Show the last known albums instantly; opening the tab refreshes them.
+  idbGet(cacheKey + ":albums").then(c => {
+    if (c && c.albums && c.albums.length && !albums.length){
+      albums = c.albums;
+      if (tab === "albums") renderAlbums();
+    }
+  });
 
   // 2) Sync with OneDrive — incremental if we have a delta token, else full.
   scanning = true; acquireWake();
@@ -1720,6 +1756,108 @@ $("localInput").onchange = (e) => {
   e.target.value = "";   // allow re-picking the same folder
   if (!n) alert("No images found in that selection.");
 };
+
+/* ============================= Albums =============================
+   OneDrive albums are "bundles" with an album facet. They are a separate
+   collection from the folder tree, so they get their own tab. */
+let albums = [];
+let albumsLoaded = false, albumsLoading = false;
+
+async function loadAlbums(force){
+  if (albumsLoading || (albumsLoaded && !force)) return;
+  albumsLoading = true;
+  renderAlbums("loading");
+  try {
+    const found = [];
+    let url = GRAPH + "/me/drive/bundles?$expand=thumbnails&$top=100";
+    while (url){
+      const data = await graphGet(url);
+      for (const b of (data.value || [])){
+        if (!b.bundle || !b.bundle.album) continue;   // bundles can also be plain sets
+        const t = (b.thumbnails && b.thumbnails[0]) || null;
+        found.push({
+          id: b.id,
+          name: b.name || "Untitled album",
+          count: (b.bundle && b.bundle.childCount) != null ? b.bundle.childCount : null,
+          cover: t ? (t.medium && t.medium.url) || (t.small && t.small.url) : null,
+          modified: b.lastModifiedDateTime || null,
+        });
+      }
+      url = data["@odata.nextLink"] || null;
+    }
+    found.sort((a,b) => new Date(b.modified||0) - new Date(a.modified||0)
+                        || a.name.localeCompare(b.name));
+    albums = found;
+    albumsLoaded = true;
+    if (cacheKey) idbSet(cacheKey + ":albums", { albums, at: Date.now() });
+    renderAlbums();
+  } catch(e){
+    logLine("albums failed: " + errText(e));
+    renderAlbums("error", e);
+  } finally { albumsLoading = false; }
+}
+
+function renderAlbums(state, err){
+  const el = $("albums");
+  if (state === "loading" && !albums.length){
+    el.innerHTML = '<div class="albums-msg">Loading albums…</div>';
+    return;
+  }
+  if (state === "error" && !albums.length){
+    el.innerHTML = '<div class="albums-msg"><h3>Couldn\'t load albums</h3>' +
+      escapeHtml(errText(err)) +
+      "<br><br>Albums come from OneDrive itself. If your account has none, or this " +
+      "OneDrive doesn't support them, there is nothing to show here.</div>";
+    return;
+  }
+  if (!albums.length){
+    el.innerHTML = '<div class="albums-msg"><h3>No albums</h3>' +
+      "Albums you create in OneDrive or the Photos app will appear here.</div>";
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const a of albums){
+    const row = document.createElement("div");
+    row.className = "album";
+    if (a.cover){
+      const img = document.createElement("img");
+      img.className = "cover"; img.loading = "lazy"; img.decoding = "async";
+      img.referrerPolicy = "no-referrer"; img.src = a.cover; img.alt = "";
+      row.appendChild(img);
+    } else {
+      const ph = document.createElement("div");
+      ph.className = "cover ph"; ph.textContent = "▤";
+      row.appendChild(ph);
+    }
+    const txt = document.createElement("div");
+    txt.className = "txt";
+    const t = document.createElement("div"); t.className = "t"; t.textContent = a.name;
+    const s = document.createElement("div"); s.className = "s";
+    s.textContent = (a.count == null ? "" : a.count.toLocaleString() + " item" + (a.count === 1 ? "" : "s")) +
+      (a.modified ? (a.count == null ? "" : " · ") + fmtWhen(a.modified) : "");
+    txt.appendChild(t); txt.appendChild(s);
+    row.appendChild(txt);
+    frag.appendChild(row);
+  }
+  el.innerHTML = "";
+  el.appendChild(frag);
+}
+
+let tab = "timeline";
+function setTab(which){
+  tab = which;
+  const onAlbums = which === "albums";
+  $("albums").style.display = onAlbums ? "block" : "none";
+  $("stream").style.display = onAlbums ? "none" : "";
+  $("sentinel").style.display = onAlbums ? "none" : "";
+  $("tabAlbums").classList.toggle("on", onAlbums);
+  $("tabTimeline").classList.toggle("on", !onAlbums);
+  $("tabAlbums").setAttribute("aria-selected", onAlbums ? "true" : "false");
+  $("tabTimeline").setAttribute("aria-selected", onAlbums ? "false" : "true");
+  if (onAlbums) loadAlbums();
+}
+$("tabTimeline").onclick = () => setTab("timeline");
+$("tabAlbums").onclick = () => setTab("albums");
 
 /* ========================= Folder explorer =========================
    Renders the OneDrive tree recorded during the scan (no extra network

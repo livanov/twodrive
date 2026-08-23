@@ -319,6 +319,12 @@ async function handleGraph(route, href, method, drive, opts, state) {
     return fulfill(route, json(t));
   }
 
+  /* Albums live in the bundles collection. opts.bundles is the raw value[]. */
+  if (p === "/v1.0/me/drive/bundles") {
+    if (opts.bundles === "error") return fulfill(route, { status: 500, json: { error: { code: "boom" } } });
+    return fulfill(route, json({ value: opts.bundles || [] }));
+  }
+
   /* Destination lookups used by Move. Must come before the generic root match. */
   if (p === "/v1.0/me/drive/root") return fulfill(route, json({ id: "root" }));
   m = p.match(/^\/v1\.0\/me\/drive\/root:\/(.+)$/);
