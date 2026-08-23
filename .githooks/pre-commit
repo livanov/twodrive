@@ -3,7 +3,7 @@
 # Enable in a fresh clone with:  git config core.hooksPath .githooks
 # Bypass for a genuine emergency with:  git commit --no-verify
 
-if [ ! -f package.json ] || [ ! -d tests ]; then
+if [ ! -f package.json ] || [ ! -f tests/run.js ]; then
   echo "pre-commit: no test suite found, skipping."
   exit 0
 fi

@@ -220,7 +220,10 @@
   .fld.queued .ct{color:var(--faint); font-style:italic}
   .fld.busy{background:rgba(94,161,255,.10)}
   .fld.busy .nm{color:var(--accent)}
-  .fld .ct .pulse{display:inline-block}
+  .fld.busy-under .nm{color:var(--text)}
+  .fld .ct{display:flex; align-items:center; gap:6px; justify-content:flex-end}
+  .fld .ct .pulse{display:inline-block; flex:none}
+  .fld .ct .pulse.faint{opacity:.5; width:6px; height:6px}
   #folderTreeEl{flex:1; overflow:auto; padding:8px 10px 16px}
   .fld{display:flex; align-items:center; gap:9px; padding:7px 6px; border-radius:8px}
   .fld:active{background:var(--surface-2)}
@@ -1426,7 +1429,7 @@ function buildDeviceIndex(){
 
 const CHEVRON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>';
 
-function folderRow(node, depth, parentHidden, hasKids){
+function folderRow(node, depth, parentHidden, hasKids, st){
   const selfHidden = hiddenPaths.includes(node.path);
   const hidden = parentHidden || selfHidden;
   const nomedia = honorNomedia && excludedPaths.includes(node.path);
@@ -1468,12 +1471,16 @@ function folderRow(node, depth, parentHidden, hasKids){
 
   const ct = document.createElement("div");
   ct.className = "ct";
-  if (scanning && scanBusy.has(node.path)){
-    row.classList.add("busy");
-    ct.innerHTML = '<span class="pulse"></span>';
-  } else if (scanning && scanPending.has(node.path)){
+  // Scan state is inherited: a folder shows the indicator when it, or
+  // anything inside it, is being read — so a collapsed branch still tells
+  // you the scan is in there. Self is emphasised, descendants are dimmer.
+  if (scanning && st && st.busy){
+    row.classList.add(st.busySelf ? "busy" : "busy-under");
+    ct.innerHTML = '<span class="pulse' + (st.busySelf ? '' : ' faint') + '"></span>' +
+                   (st.busySelf ? "" : '<span class="n">' + (node.total ? node.total.toLocaleString() : "") + "</span>");
+  } else if (scanning && st && st.queued){
     row.classList.add("queued");
-    ct.textContent = "queued";
+    ct.textContent = st.queuedSelf ? "queued" : (node.total ? node.total.toLocaleString() : "…");
   } else {
     ct.textContent = node.total ? node.total.toLocaleString() : "";
   }
@@ -1526,11 +1533,26 @@ function renderFolderTree(){
 
   const addTree = (root) => {
     const keep = computeKeepMap(root);
+    // Roll scan state up the tree so ancestors of an active folder light up too.
+    const busyIn = new Set(), queuedIn = new Set();
+    const rollScan = (n) => {
+      let b = scanBusy.has(n.path), q = scanPending.has(n.path);
+      for (const k of n.kids){ const r = rollScan(k); b = b || r.b; q = q || r.q; }
+      if (b) busyIn.add(n.path);
+      if (q) queuedIn.add(n.path);
+      return { b, q };
+    };
+    if (scanning) rollScan(root);
+    const stateOf = (n) => ({
+      busy: busyIn.has(n.path),       busySelf: scanBusy.has(n.path),
+      queued: queuedIn.has(n.path),   queuedSelf: scanPending.has(n.path),
+    });
+
     const visibleKids = (n) =>
       onlyWithPhotos ? n.kids.filter(k => keep.get(k.path)) : n.kids;
     const walk = (node, depth, parentHidden) => {
       const kids = visibleKids(node);
-      frag.appendChild(folderRow(node, depth, parentHidden, kids.length > 0));
+      frag.appendChild(folderRow(node, depth, parentHidden, kids.length > 0, stateOf(node)));
       if (!treeOpen.has(node.path)) return;
       const hidden = parentHidden || hiddenPaths.includes(node.path);
       skipped += node.kids.length - kids.length;
