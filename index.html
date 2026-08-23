@@ -339,8 +339,7 @@
   </label>
   <div id="folderTreeEl"></div>
   <div class="diag-actions">
-    <button class="btn ghost" id="foldersShowAll">Unhide all folders</button>
-    <p class="note" id="foldersNote">Unticking a folder hides it and everything inside it. Changes apply straight away — no rescan needed.</p>
+    <p class="note" id="foldersNote">Unticking a folder hides it and everything inside it; ticking it back shows the lot again. Tick <b>OneDrive</b> at the top to unhide everything. Changes apply straight away — no rescan needed.</p>
   </div>
 </div>
 
@@ -1256,14 +1255,14 @@ function folderRow(node, depth, parentHidden){
   }
   row.appendChild(tw);
 
-  if (node.path !== ROOT_PATH){
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = !hidden;
-    cb.disabled = parentHidden;   // implied by an unticked ancestor
-    cb.onchange = () => setFolderVisible(node.path, cb.checked);
-    row.appendChild(cb);
-  }
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !hidden;
+  cb.disabled = parentHidden;   // implied by an unticked ancestor
+  // Partly ticked when something inside is hidden but this folder isn't.
+  cb.indeterminate = !hidden && hiddenPaths.some(h => h.startsWith(node.path + "/"));
+  cb.onchange = () => setFolderVisible(node.path, cb.checked);
+  row.appendChild(cb);
 
   const nm = document.createElement("div");
   nm.className = "nm";
@@ -1300,18 +1299,14 @@ function renderFolderTree(){
   };
   walk(root, 0, false);
   el.appendChild(frag);
-
-  // Make the reset button say exactly what it would undo.
-  const btn = $("foldersShowAll");
-  btn.textContent = hiddenPaths.length
-    ? "Unhide all folders (" + hiddenPaths.length + ")"
-    : "Unhide all folders";
-  btn.disabled = !hiddenPaths.length;
 }
 
 function setFolderVisible(path, visible){
-  if (visible) hiddenPaths = hiddenPaths.filter(p => p !== path);
-  else if (!hiddenPaths.includes(path)){
+  // Ticking a folder shows its whole subtree, clearing anything hidden inside
+  // it — so ticking the root brings everything back.
+  if (visible){
+    hiddenPaths = hiddenPaths.filter(p => p !== path && !p.startsWith(path + "/"));
+  } else if (!hiddenPaths.includes(path)){
     // Drop now-redundant descendants, then hide this whole subtree.
     hiddenPaths = hiddenPaths.filter(p => !p.startsWith(path + "/"));
     hiddenPaths.push(path);
@@ -1325,13 +1320,6 @@ function openFolders(){ $("folders").classList.add("open"); renderFolderTree(); 
 function closeFolders(){ $("folders").classList.remove("open"); }
 $("menuFolders").onclick = () => { setMenu(false); openFolders(); };
 $("foldersClose").onclick = closeFolders;
-$("foldersShowAll").onclick = () => {
-  hiddenPaths = [];
-  lsSet("lumen_hidden", "[]");
-  renderFolderTree();
-  refreshTimeline(true);
-  toast("All folders shown");
-};
 $("nomediaToggle").onchange = () => {
   honorNomedia = $("nomediaToggle").checked;
   lsSet("lumen_nomedia", honorNomedia ? "1" : "0");
