@@ -134,6 +134,13 @@
   }
   .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:p 1s infinite}
   @keyframes p{0%,100%{opacity:.35}50%{opacity:1}}
+  .toast{
+    position:fixed; left:50%; bottom:calc(70px + env(safe-area-inset-bottom));
+    transform:translateX(-50%); z-index:120; display:none;
+    background:rgba(31,31,37,.96); border:1px solid var(--line); border-radius:999px;
+    padding:10px 18px; font-size:13.5px; color:var(--text); white-space:nowrap;
+    box-shadow:0 8px 30px rgba(0,0,0,.5);
+  }
   .empty{display:none; text-align:center; color:var(--muted); padding:80px 30px; line-height:1.6}
   .empty h2{color:var(--text); font-weight:640; margin:0 0 8px}
 
@@ -158,8 +165,13 @@
 </head>
 <body>
 
+<!-- BOOT SPLASH (shown until we know whether to show setup or the gallery) -->
+<div class="screen" id="boot">
+  <div class="wordmark"><h1>Lumen</h1><span class="dot"></span></div>
+</div>
+
 <!-- SETUP / CONNECT -->
-<div class="screen" id="setup">
+<div class="screen" id="setup" style="display:none">
   <div class="card">
     <div class="wordmark"><h1>Lumen</h1><span class="dot"></span></div>
     <p class="tagline">Every photo in your OneDrive — and on this device — in one fast timeline.</p>
@@ -206,6 +218,7 @@
 </div>
 
 <div class="scanbar" id="scanbar"><span class="pulse"></span><span id="scanText">Scanning…</span></div>
+<div class="toast" id="toast"></div>
 
 <!-- LIGHTBOX -->
 <div id="lightbox">
@@ -244,6 +257,7 @@ let deltaLink = null;    // Graph delta token for incremental rescans
 let excludedPaths = [];  // folder paths carrying a .nomedia (and thus skipped)
 let localPhotos = [];    // photos read from this device {source:"local"}
 let localSeen = new Set();// dedupe key (name|size) for local files already added
+let scanSeen = new Set(); // ids seen during the current full walk (for pruning)
 let view = [];           // deduped + sorted union of OneDrive + local, used for render/lightbox
 
 /* A driveItem path is excluded if it equals, or sits under, a .nomedia folder. */
@@ -431,6 +445,7 @@ async function scanDrive(onProgress){
         if (it.folder){
           if ((it.folder.childCount ?? 1) > 0) next.push(it.id);
         } else if (it.file && (it.image || (it.file.mimeType || "").startsWith("image/"))){
+          scanSeen.add(it.id);             // for pruning items that are gone
           if (have.has(it.id)) continue;   // already have it from cache
           const t = (it.thumbnails && it.thumbnails[0]) || null;
           const thumb = t ? (t.medium && t.medium.url) || (t.small && t.small.url) : null;
@@ -481,8 +496,14 @@ function toRecord(it, prev){
    token so subsequent launches only fetch changes. ---- */
 async function fullScan(onProgress){
   _listReqs = 0; excludedPaths = [];   // small first pages again; rediscover .nomedia folders
+  scanSeen = new Set();
   await scanDrive(onProgress);         // merges into existing photos, so a cached view isn't wiped
-  if (excludedPaths.length) photos = photos.filter(p => !isExcluded(p.path));
+  // The walk completed, so anything not seen is gone (deleted, or now under a
+  // .nomedia). Drop it — this is what keeps a merging rescan accurate.
+  photos = photos.filter(p => {
+    if (scanSeen.has(p.id) && !isExcluded(p.path)) return true;
+    cellCache.delete(p.id); return false;
+  });
   try {
     const d = await graphGet(GRAPH + "/me/drive/root/delta?token=latest");
     deltaLink = d["@odata.deltaLink"] || null;
@@ -719,8 +740,30 @@ function closeLb(){
   if (lbHistory){ lbHistory = false; history.back(); return; }
   hideLb();
 }
+/* Back-button handling. In a standalone (installed) PWA there's nothing behind
+   the app, so a stray Back would quit it. We keep a guard entry on the stack:
+   Back closes an open photo first; on the gallery it warns once, and only a
+   second Back within 2s actually exits. */
+const isStandalone = () =>
+  (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+let guardPushed = false, backArmed = false, backTimer = null;
+function armBackGuard(){
+  if (guardPushed || !isStandalone()) return;
+  try { history.pushState({ lumenGuard: true }, ""); guardPushed = true; } catch(e){}
+}
 window.addEventListener("popstate", () => {
-  if (lb.style.display === "flex"){ lbHistory = false; hideLb(); }
+  if (lb.style.display === "flex"){ lbHistory = false; hideLb(); return; }
+  if (!guardPushed) return;                       // browser tab → normal Back
+  if (backArmed){                                 // second press: really leave
+    guardPushed = false; backArmed = false; clearTimeout(backTimer);
+    $("toast").style.display = "none";
+    history.back();
+    return;
+  }
+  try { history.pushState({ lumenGuard: true }, ""); } catch(e){}   // stay put
+  backArmed = true;
+  toast("Press back again to exit");
+  backTimer = setTimeout(() => { backArmed = false; }, 2000);
 });
 function step(d){ lbIndex = (lbIndex + d + view.length) % view.length; showLb(); }
 $("lbClose").onclick = closeLb;
@@ -806,29 +849,42 @@ async function browseLocal(){
 }
 
 /* ============================ Flow ============================ */
-function show(id){ ["setup","gallery"].forEach(s => $(s).style.display = (s===id ? (id==="gallery"?"block":"flex") : "none")); }
+function show(id){
+  ["boot","setup","gallery"].forEach(s => $(s).style.display = (s===id ? (id==="gallery"?"block":"flex") : "none"));
+  if (id === "gallery") armBackGuard();
+}
+
+function toast(msg, ms){
+  const t = $("toast");
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._t); t._t = setTimeout(() => { t.style.display = "none"; }, ms || 2000);
+}
 
 async function startGallery(force){
-  show("gallery");
   $("empty").style.display = "none";
-  stream.innerHTML = ""; photos = []; rendered = 0; deltaLink = null; excludedPaths = []; cellCache.clear();
-  if (io){ io.disconnect(); io = null; }
   lastRefresh = 0; if (refreshTimer){ clearTimeout(refreshTimer); refreshTimer = null; }
 
   const acct = pca && pca.getActiveAccount();
   cacheKey = "photos:" + (acct ? acct.homeAccountId : "anon");
 
-  // 1) Instant paint from the local cache, if we have one.
-  let haveCache = false;
-  const cached = force ? null : await idbGet(cacheKey);
-  if (cached && cached.photos && cached.photos.length){
-    photos = cached.photos;
-    deltaLink = cached.deltaLink || null;
-    excludedPaths = cached.excludedPaths || [];
-    refreshTimeline(true);
-    setupInfiniteScroll();
-    haveCache = true;
+  // 1) Load the cache BEFORE revealing the gallery, so the first thing drawn
+  //    is real content — no empty-grid flash. A forced rescan (↻) keeps what's
+  //    already on screen and merges into it instead of blanking.
+  if (force){
+    deltaLink = null; excludedPaths = [];   // full walk; scan prunes what's gone
+  } else {
+    photos = []; rendered = 0; excludedPaths = []; cellCache.clear(); stream.innerHTML = "";
+    const cached = await idbGet(cacheKey);
+    if (cached && cached.photos && cached.photos.length){
+      photos = cached.photos;
+      deltaLink = cached.deltaLink || null;
+      excludedPaths = cached.excludedPaths || [];
+    }
   }
+  const haveCache = photos.length > 0;
+  show("gallery");
+  refreshTimeline(true);
+  setupInfiniteScroll();
 
   // 2) Sync with OneDrive — incremental if we have a delta token, else full.
   $("scanbar").style.display = "flex";
@@ -856,7 +912,7 @@ async function startGallery(force){
     }
     await persistCache();
     $("scanbar").style.display = "none";
-    if (!photos.length) $("empty").style.display = "block";
+    if (!view.length) $("empty").style.display = "block";
   } catch (e){
     // Keep whatever we managed to load and persist it, so a reload shows it.
     if (photos.length){ refreshTimeline(true); setupInfiniteScroll(); await persistCache(); }
