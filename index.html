@@ -678,12 +678,17 @@ function refreshTimeline(force){
 
 /* ============================ Lightbox ============================ */
 let lbIndex = -1;
+let lbHistory = false;   // did we push a history entry for the open lightbox?
 const lb = $("lightbox");
 function openLightbox(p){
   lbIndex = view.indexOf(p);
   showLb();
   lb.style.display = "flex";
   document.body.style.overflow = "hidden";
+  // Push a history entry so Android's Back closes the photo instead of
+  // leaving the app (nothing else to go back to in a standalone PWA).
+  try { history.pushState({ lumenLb: true }, ""); lbHistory = true; }
+  catch(e){ lbHistory = false; }
 }
 function showLb(){
   const p = view[lbIndex]; if (!p) return;
@@ -707,7 +712,16 @@ function showLb(){
       }).catch(() => {});
   }
 }
-function closeLb(){ lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1; }
+function hideLb(){ lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1; }
+function closeLb(){
+  // If we pushed an entry, go back — popstate then hides the lightbox, so the
+  // history stack stays balanced whether you tap ✕ or the system Back button.
+  if (lbHistory){ lbHistory = false; history.back(); return; }
+  hideLb();
+}
+window.addEventListener("popstate", () => {
+  if (lb.style.display === "flex"){ lbHistory = false; hideLb(); }
+});
 function step(d){ lbIndex = (lbIndex + d + view.length) % view.length; showLb(); }
 $("lbClose").onclick = closeLb;
 $("lbPrev").onclick = () => step(-1);
