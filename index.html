@@ -339,7 +339,7 @@
   </label>
   <div id="folderTreeEl"></div>
   <div class="diag-actions">
-    <button class="btn ghost" id="foldersShowAll">Show all folders</button>
+    <button class="btn ghost" id="foldersShowAll">Unhide all folders</button>
     <p class="note" id="foldersNote">Unticking a folder hides it and everything inside it. Changes apply straight away — no rescan needed.</p>
   </div>
 </div>
@@ -1300,6 +1300,13 @@ function renderFolderTree(){
   };
   walk(root, 0, false);
   el.appendChild(frag);
+
+  // Make the reset button say exactly what it would undo.
+  const btn = $("foldersShowAll");
+  btn.textContent = hiddenPaths.length
+    ? "Unhide all folders (" + hiddenPaths.length + ")"
+    : "Unhide all folders";
+  btn.disabled = !hiddenPaths.length;
 }
 
 function setFolderVisible(path, visible){
