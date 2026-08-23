@@ -1,0 +1,26 @@
+#!/bin/sh
+# Run the test suite before every commit.
+# Enable in a fresh clone with:  git config core.hooksPath .githooks
+# Bypass for a genuine emergency with:  git commit --no-verify
+
+if [ ! -f package.json ] || [ ! -d tests ]; then
+  echo "pre-commit: no test suite found, skipping."
+  exit 0
+fi
+
+if [ ! -d node_modules ]; then
+  echo "pre-commit: node_modules missing — run 'npm install' to enable tests."
+  echo "pre-commit: skipping tests for this commit."
+  exit 0
+fi
+
+echo "pre-commit: running test suite…"
+if npm test --silent; then
+  echo "pre-commit: tests passed."
+  exit 0
+fi
+
+echo ""
+echo "pre-commit: TESTS FAILED — commit aborted."
+echo "Fix the failures, or use 'git commit --no-verify' to bypass deliberately."
+exit 1
