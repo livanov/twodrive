@@ -209,6 +209,9 @@
   .sw input:checked ~ .knob{transform:translateX(18px)}
   .fld-toggle code{background:var(--surface-2); padding:1px 6px; border-radius:6px;
     font-family:ui-monospace,Menlo,monospace; font-size:12.5px}
+  .fld-status{padding:9px 14px; font-size:12.5px; color:var(--faint); line-height:1.45;
+    border-bottom:1px solid var(--line)}
+  .fld-status.warn{color:#ffcf8b}
   #folderTreeEl{flex:1; overflow:auto; padding:8px 10px 16px}
   .fld{display:flex; align-items:center; gap:9px; padding:7px 6px; border-radius:8px}
   .fld:active{background:var(--surface-2)}
@@ -363,6 +366,7 @@
       <span class="sw"><input type="checkbox" id="nomediaToggle" /><span class="track"></span><span class="knob"></span></span>
     </label>
   </div>
+  <div class="fld-status" id="fldStatus"></div>
   <div id="folderTreeEl"></div>
   <div class="diag-actions">
     <p class="note" id="foldersNote">Unticking a folder hides it and everything inside it; ticking it back shows the lot again. Tick <b>OneDrive</b> at the top to unhide everything. Changes apply straight away — no rescan needed.</p>
@@ -426,6 +430,7 @@ let userTicked = [];     // folders the user ticked back on — never auto-hide 
 let honorNomedia = true; // whether .nomedia folders are respected
 let onlyWithPhotos = true; // folder explorer: hide branches containing no photos
 let folderTree = [];     // [{path,name,parentPath}] recorded during the scan
+let scanInfo = { done:false, at:0, folders:0 };   // did a full walk ever finish?
 const ROOT_PATH = "/drive/root:";
 const DEVICE_ROOT = "device:";
 
@@ -496,7 +501,7 @@ async function persistCache(){
   if (!cacheKey) return;
   const lean = photos.map(p => ({ id:p.id, name:p.name, date:p.date,
     thumb:p.thumb, large:p.large, download:p.download, path:p.path }));
-  await idbSet(cacheKey, { photos: lean, deltaLink, excludedPaths, folderTree, savedAt: Date.now() });
+  await idbSet(cacheKey, { photos: lean, deltaLink, excludedPaths, folderTree, scanInfo, savedAt: Date.now() });
 }
 let _savedOnce = false;
 function scheduleSave(){
@@ -669,6 +674,7 @@ async function scanDrive(onProgress){
       }
     }
     folders += frontier.length;
+    scanInfo.folders = folders;
     onProgress(photos.length, folders);
     frontier = next;
   }
@@ -707,6 +713,7 @@ async function fullScan(onProgress){
     cellCache.delete(p.id); return false;
   });
   autoHideEmptyFolders();   // folders that held nothing start out unticked
+  scanInfo.done = true; scanInfo.at = Date.now();   // the walk reached every folder
   try {
     const d = await graphGet(GRAPH + "/me/drive/root/delta?token=latest");
     deltaLink = d["@odata.deltaLink"] || null;
@@ -1109,6 +1116,7 @@ async function startGallery(force){
       deltaLink = cached.deltaLink || null;
       excludedPaths = cached.excludedPaths || [];
       folderTree = cached.folderTree || [];
+      scanInfo = cached.scanInfo || scanInfo;
     }
   }
   const haveCache = photos.length > 0;
@@ -1142,8 +1150,13 @@ async function startGallery(force){
       setupInfiniteScroll();
     }
     await persistCache();
-    $("scanbar").style.display = "none";
     if (!view.length) $("empty").style.display = "block";
+    // Say plainly that it finished, rather than just vanishing.
+    $("scanText").textContent = needFull
+      ? "Scan complete · " + view.length.toLocaleString() + " photos in " +
+        scanInfo.folders.toLocaleString() + " folders"
+      : "Up to date · " + view.length.toLocaleString() + " photos";
+    setTimeout(() => { $("scanbar").style.display = "none"; }, 3500);
   } catch (e){
     logLine("scan aborted: " + errText(e));
     // Keep whatever we managed to load and persist it, so a reload shows it.
@@ -1382,6 +1395,18 @@ function computeKeepMap(root){
 }
 
 function renderFolderTree(){
+  const st = $("fldStatus");
+  if (scanInfo.done){
+    st.className = "fld-status";
+    st.textContent = "Full scan finished " + new Date(scanInfo.at).toLocaleString() +
+      " — " + folderTree.length.toLocaleString() + " folders, " +
+      scanInfo.folders.toLocaleString() + " visited. Launches since then only fetch changes.";
+  } else {
+    st.className = "fld-status warn";
+    st.textContent = "No full scan has finished yet, so folders may be missing from this tree. " +
+      "Choose Rescan OneDrive from the menu and leave it running until it says “Scan complete”.";
+  }
+
   const el = $("folderTreeEl");
   el.innerHTML = "";
   const frag = document.createDocumentFragment();
@@ -1611,7 +1636,8 @@ async function runDiag(){
   say("— Local data —");
   say("photos in memory: " + photos.length + " onedrive, " + localPhotos.length + " device, " + view.length + " shown");
   say("deltaLink: " + (deltaLink ? "present (incremental sync ready)" : "none (full scan needed)"));
-  say("folders known: " + folderTree.length);
+  say("full scan finished: " + (scanInfo.done ? new Date(scanInfo.at).toLocaleString() : "NEVER (rescans fully each launch)"));
+  say("folders known: " + folderTree.length + " (visited " + scanInfo.folders + ")");
   say("honor .nomedia: " + honorNomedia + " (" + excludedPaths.length + " such folders)");
   say("hidden by you: " + hiddenPaths.length + (hiddenPaths.length ? "\n  " + hiddenPaths.slice(0,15).join("\n  ") : ""));
   try {
