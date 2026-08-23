@@ -162,6 +162,8 @@
     padding:9px 16px; font-size:13px; color:var(--muted); display:none; align-items:center; gap:9px;
     box-shadow:0 8px 30px rgba(0,0,0,.5);
   }
+  .scanbar.tappable{border-color:var(--accent); color:var(--text)}
+  .scanbar.tappable .pulse{animation:none; background:var(--danger)}
   .pulse{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:p 1s infinite}
   @keyframes p{0%,100%{opacity:.35}50%{opacity:1}}
   .toast{
@@ -431,6 +433,24 @@ let honorNomedia = true; // whether .nomedia folders are respected
 let onlyWithPhotos = true; // folder explorer: hide branches containing no photos
 let folderTree = [];     // [{path,name,parentPath}] recorded during the scan
 let scanInfo = { done:false, at:0, folders:0 };   // did a full walk ever finish?
+let scanning = false;      // a walk is in flight
+let scanFrontier = null;   // folders still to visit, checkpointed so a scan resumes
+let wakeLock = null;       // keeps the screen awake so the page isn't frozen
+
+/* Browsers freeze hidden pages, so scanning only continues while the app is
+   on screen. A wake lock stops the screen sleeping mid-scan. */
+async function acquireWake(){
+  try {
+    if ("wakeLock" in navigator && !wakeLock){
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+      logLine("screen wake lock acquired");
+    }
+  } catch(e){ logLine("wake lock failed: " + errText(e)); }
+}
+function releaseWake(){
+  try { if (wakeLock){ wakeLock.release(); wakeLock = null; } } catch(e){}
+}
 const ROOT_PATH = "/drive/root:";
 const DEVICE_ROOT = "device:";
 
@@ -631,9 +651,10 @@ async function pool(items, fn, conc){
 /* ---- Walk the whole drive, breadth-first, pushing images into `photos` ----
    Results stream into the global `photos` array as folders are read, so the
    UI can render progressively instead of waiting for the full scan. ---- */
-async function scanDrive(onProgress){
+async function scanDrive(onProgress, startFrontier){
   const have = new Set(photos.map(p => p.id));   // keep cached photos on screen; add new ones
-  let frontier = ["root"], folders = 0;
+  let frontier = (startFrontier && startFrontier.length) ? startFrontier.slice() : ["root"];
+  let folders = startFrontier ? (scanInfo.folders || 0) : 0;
   while (frontier.length){
     const batches = await pool(frontier, listChildren, 3);
     const next = [];
@@ -677,7 +698,26 @@ async function scanDrive(onProgress){
     scanInfo.folders = folders;
     onProgress(photos.length, folders);
     frontier = next;
+    scanFrontier = next.slice();       // checkpoint: what's left to visit
+    scheduleCheckpoint();
   }
+  scanFrontier = null;
+  await saveCheckpoint();              // walk finished — nothing left to resume
+}
+
+/* Checkpoint the remaining folder queue under its own key, so it's cheap to
+   write often without rewriting the whole photo list. */
+let ckTimer = null;
+async function saveCheckpoint(){
+  if (!cacheKey) return;
+  await idbSet(cacheKey + ":scan",
+    (scanFrontier && scanFrontier.length)
+      ? { frontier: scanFrontier, folders: scanInfo.folders, at: Date.now() }
+      : null);
+}
+function scheduleCheckpoint(){
+  if (ckTimer) return;
+  ckTimer = setTimeout(() => { ckTimer = null; saveCheckpoint(); }, 5000);
 }
 
 /* ---- Map a Graph driveItem to our photo record (reusing cached fields) ---- */
@@ -701,17 +741,21 @@ function toRecord(it, prev){
 
 /* ---- Full first-time scan: proven folder walk, then snapshot a delta
    token so subsequent launches only fetch changes. ---- */
-async function fullScan(onProgress){
-  _listReqs = 0; excludedPaths = []; folderTree = [];   // rediscover markers and the tree
+async function fullScan(onProgress, resumeFrom){
+  _listReqs = 0;
+  if (!resumeFrom){ excludedPaths = []; folderTree = []; scanInfo.folders = 0; }
   scanSeen = new Set();
-  await scanDrive(onProgress);         // merges into existing photos, so a cached view isn't wiped
-  // The walk completed, so anything not seen is gone (deleted, or skipped as
-  // .nomedia). Drop it — this is what keeps a merging rescan accurate.
-  // Folder hiding is applied at render time, never by discarding data here.
-  photos = photos.filter(p => {
-    if (scanSeen.has(p.id)) return true;
-    cellCache.delete(p.id); return false;
-  });
+  await scanDrive(onProgress, resumeFrom);   // merges, so a cached view isn't wiped
+  // A walk that ran start-to-finish saw everything, so anything missing is
+  // gone (deleted, or skipped as .nomedia) and can be dropped. A RESUMED walk
+  // only saw the tail, so pruning would delete perfectly good photos — skip it
+  // and let the next clean rescan or delta sync catch removals.
+  if (!resumeFrom){
+    photos = photos.filter(p => {
+      if (scanSeen.has(p.id)) return true;
+      cellCache.delete(p.id); return false;
+    });
+  }
   autoHideEmptyFolders();   // folders that held nothing start out unticked
   scanInfo.done = true; scanInfo.at = Date.now();   // the walk reached every folder
   try {
@@ -1119,6 +1163,18 @@ async function startGallery(force){
       scanInfo = cached.scanInfo || scanInfo;
     }
   }
+  // An interrupted walk left a checkpoint — pick up where it stopped.
+  let resumeFrom = null;
+  if (!force){
+    const ck = await idbGet(cacheKey + ":scan");
+    if (ck && ck.frontier && ck.frontier.length){
+      resumeFrom = ck.frontier;
+      scanInfo.folders = ck.folders || 0;
+    }
+  } else {
+    await idbSet(cacheKey + ":scan", null);
+  }
+
   const haveCache = photos.length > 0;
   show("gallery");
   refreshTimeline(true);
@@ -1126,10 +1182,11 @@ async function startGallery(force){
   loadAccountInfo();   // fills the menu header (name, email, picture)
 
   // 2) Sync with OneDrive — incremental if we have a delta token, else full.
+  scanning = true; acquireWake();
   $("scanbar").style.display = "flex";
   try {
-    let needFull = !deltaLink;
-    if (deltaLink){
+    let needFull = !deltaLink || !!resumeFrom;
+    if (deltaLink && !resumeFrom){
       $("scanText").textContent = "Checking for new photos…";
       try {
         const { changed, removed } = await deltaSync(n => {
@@ -1141,17 +1198,19 @@ async function startGallery(force){
       }
     }
     if (needFull){
+      const verb = resumeFrom ? "Resuming scan… " : "Scanning… ";
       await fullScan((n, f) => {
-        $("scanText").textContent = "Scanning… " + n.toLocaleString() + " photos · " + f + " folders";
+        $("scanText").textContent = verb + n.toLocaleString() + " photos · " + f + " folders";
         refreshTimeline(false);   // live preview of newest photos so far
         scheduleSave();           // persist as we go, so a reload isn't empty
-      });
+      }, resumeFrom);
       refreshTimeline(true);
       setupInfiniteScroll();
     }
     await persistCache();
     if (!view.length) $("empty").style.display = "block";
     // Say plainly that it finished, rather than just vanishing.
+    $("scanbar").classList.remove("tappable");
     $("scanText").textContent = needFull
       ? "Scan complete · " + view.length.toLocaleString() + " photos in " +
         scanInfo.folders.toLocaleString() + " folders"
@@ -1159,11 +1218,14 @@ async function startGallery(force){
     setTimeout(() => { $("scanbar").style.display = "none"; }, 3500);
   } catch (e){
     logLine("scan aborted: " + errText(e));
-    // Keep whatever we managed to load and persist it, so a reload shows it.
+    // Keep whatever we managed to load and persist it, plus the checkpoint,
+    // so the next launch (or a tap) carries on instead of starting over.
+    await saveCheckpoint();
     if (photos.length){ refreshTimeline(true); setupInfiniteScroll(); await persistCache(); }
     $("scanText").textContent = photos.length
-      ? "Paused (rate-limited) — Rescan from the menu to resume · " + photos.length.toLocaleString() + " photos"
-      : "Couldn't reach OneDrive";
+      ? "Paused · " + photos.length.toLocaleString() + " photos — tap to resume"
+      : "Couldn't reach OneDrive — tap to retry";
+    $("scanbar").classList.add("tappable");
     if (!photos.length && !haveCache){
       $("scanbar").style.display = "none";
       $("empty").style.display = "block";
@@ -1174,6 +1236,9 @@ async function startGallery(force){
       $("empty").innerHTML = "<h2>Couldn't load photos</h2>" + errText(e) +
         (hint ? "<br><br>" + hint : "");
     }
+  } finally {
+    scanning = false;
+    releaseWake();
   }
 }
 
@@ -1265,6 +1330,19 @@ async function loadAccountInfo(){
 }
 
 /* ---- Local device photos wiring ---- */
+/* Tap the paused scan bar to carry on from the checkpoint. */
+$("scanbar").onclick = () => {
+  if (scanning || !$("scanbar").classList.contains("tappable")) return;
+  $("scanbar").classList.remove("tappable");
+  startGallery(false);
+};
+/* Coming back to the app: re-take the wake lock, and resume a stalled scan. */
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (scanning){ acquireWake(); return; }
+  if ($("scanbar").classList.contains("tappable")) startGallery(false);
+});
+
 $("localBtn").onclick = browseLocal;
 $("localBtn2").onclick = browseLocal;
 $("localInput").onchange = (e) => {
@@ -1638,6 +1716,12 @@ async function runDiag(){
   say("deltaLink: " + (deltaLink ? "present (incremental sync ready)" : "none (full scan needed)"));
   say("full scan finished: " + (scanInfo.done ? new Date(scanInfo.at).toLocaleString() : "NEVER (rescans fully each launch)"));
   say("folders known: " + folderTree.length + " (visited " + scanInfo.folders + ")");
+  try {
+    const ck = await idbGet(cacheKey + ":scan");
+    say("resume checkpoint: " + (ck && ck.frontier ? ck.frontier.length + " folders still queued" : "none"));
+  } catch(e){}
+  say("wake lock: " + (wakeLock ? "held" : "not held") +
+      ("wakeLock" in navigator ? "" : " (unsupported)"));
   say("honor .nomedia: " + honorNomedia + " (" + excludedPaths.length + " such folders)");
   say("hidden by you: " + hiddenPaths.length + (hiddenPaths.length ? "\n  " + hiddenPaths.slice(0,15).join("\n  ") : ""));
   try {
