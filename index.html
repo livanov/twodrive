@@ -188,15 +188,25 @@
   #folders{position:fixed; inset:0; z-index:200; background:var(--bg); display:none;
     flex-direction:column; padding-top:env(safe-area-inset-top)}
   #folders.open{display:flex}
-  .fld-toggles{border-bottom:1px solid var(--line)}
+  .fld-config{display:none; border-bottom:1px solid var(--line); background:var(--surface)}
+  .fld-config.open{display:block}
   .fld-toggle{display:flex; align-items:center; gap:11px; margin:0; padding:12px 14px;
     color:var(--text); font-size:14px;
     text-transform:none; letter-spacing:normal; font-weight:500}
   .fld-toggle + .fld-toggle{border-top:1px solid var(--line)}
-  .fld-toggle input[type=checkbox]{width:18px; height:18px; flex:none; accent-color:var(--accent)}
+  .fld-toggle .lbl{flex:1; min-width:0}
   .fld-toggle .ti{flex:none; display:grid; place-items:center; color:var(--faint)}
   .fld-toggle .ti svg{width:17px; height:17px; display:block; fill:none; stroke:currentColor;
     stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round}
+  /* pill switch */
+  .sw{position:relative; width:42px; height:24px; flex:none}
+  .sw input{position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; z-index:2}
+  .sw .track{position:absolute; inset:0; border-radius:999px; background:var(--surface-2);
+    border:1px solid var(--line); transition:background .18s, border-color .18s}
+  .sw .knob{position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.45); transition:transform .18s}
+  .sw input:checked ~ .track{background:var(--accent); border-color:var(--accent)}
+  .sw input:checked ~ .knob{transform:translateX(18px)}
   .fld-toggle code{background:var(--surface-2); padding:1px 6px; border-radius:6px;
     font-family:ui-monospace,Menlo,monospace; font-size:12.5px}
   #folderTreeEl{flex:1; overflow:auto; padding:8px 10px 16px}
@@ -336,19 +346,21 @@
   <div class="diag-bar">
     <b>Folders</b>
     <span class="spacer"></span>
+    <button class="icon-btn" id="fldCog" title="Options" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.2 14.6a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.55V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1.03H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.56-1.1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.03 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1.03H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.55 1.03z"/></svg></button>
     <button class="icon-btn" id="foldersClose" title="Close">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
   </div>
-  <div class="fld-toggles">
+  <div class="fld-config" id="fldConfig">
     <label class="fld-toggle">
-      <input type="checkbox" id="withPhotosToggle" />
       <span class="ti"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></span>
-      <span>Only folders with photos</span>
+      <span class="lbl">Only folders with photos</span>
+      <span class="sw"><input type="checkbox" id="withPhotosToggle" /><span class="track"></span><span class="knob"></span></span>
     </label>
     <label class="fld-toggle">
-      <input type="checkbox" id="nomediaToggle" />
       <span class="ti"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16l-8-4-8 4z"/></svg></span>
-      <span>Honor <code>.nomedia</code> files</span>
+      <span class="lbl">Honor <code>.nomedia</code> files</span>
+      <span class="sw"><input type="checkbox" id="nomediaToggle" /><span class="track"></span><span class="knob"></span></span>
     </label>
   </div>
   <div id="folderTreeEl"></div>
@@ -407,11 +419,14 @@ let pca = null;          // MSAL instance
 let photos = [];         // {id,name,date,thumb,large,download}
 let deltaLink = null;    // Graph delta token for incremental rescans
 let excludedPaths = [];  // folder paths carrying a .nomedia (auto-detected)
-let hiddenPaths = [];    // folder paths the user unticked in the folder explorer
+let hiddenPaths = [];    // folder paths currently unticked (user or auto)
+let autoHidden = [];     // subset of the above added automatically (empty at scan time)
+let userTicked = [];     // folders the user ticked back on — never auto-hide these again
 let honorNomedia = true; // whether .nomedia folders are respected
 let onlyWithPhotos = true; // folder explorer: hide branches containing no photos
 let folderTree = [];     // [{path,name,parentPath}] recorded during the scan
 const ROOT_PATH = "/drive/root:";
+const DEVICE_ROOT = "device:";
 
 /* A path is hidden if it is, or sits under, a folder the user unticked. */
 function isHidden(path){
@@ -680,6 +695,7 @@ async function fullScan(onProgress){
     if (scanSeen.has(p.id)) return true;
     cellCache.delete(p.id); return false;
   });
+  autoHideEmptyFolders();   // folders that held nothing start out unticked
   try {
     const d = await graphGet(GRAPH + "/me/drive/root/delta?token=latest");
     deltaLink = d["@odata.deltaLink"] || null;
@@ -768,7 +784,12 @@ function buildView(){
     if (isFilteredOut(p.path)) continue;   // hidden folder or .nomedia
     const k = dkey(p); if (!seen.has(k)) seen.set(k, p);
   }
-  for (const p of localPhotos){ seen.set(dkey(p), p); }   // local overrides OneDrive dup
+  // Local copy wins a duplicate — unless it's in a folder you hid, in which
+  // case the OneDrive copy (if any) stays.
+  for (const p of localPhotos){
+    if (isFilteredOut(p.path)) continue;
+    seen.set(dkey(p), p);
+  }
   view = [...seen.values()];
   view.sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
 }
@@ -988,18 +1009,24 @@ function dateFromName(name, lastModified){
   return new Date(lastModified || Date.now()).toISOString();
 }
 
-function addLocalFiles(files){
+/* Accepts File objects or {file, rel} pairs. `rel` is the path relative to
+   the folder you picked, which is what builds the device tree. */
+function addLocalFiles(items){
   let added = 0;
-  for (const f of files){
-    if (!(/^image\//.test(f.type) || IMG_RE.test(f.name))) continue;
+  for (const item of items){
+    const f = item && item.file ? item.file : item;
+    if (!f || !(/^image\//.test(f.type) || IMG_RE.test(f.name))) continue;
     const key = (f.name || "").toLowerCase() + "|" + f.size;
     if (localSeen.has(key)) continue;
     localSeen.add(key);
+    const rel = (item && item.rel) || f.webkitRelativePath || f.name;
+    const dir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
     const url = URL.createObjectURL(f);
     localPhotos.push({
       id: "local:" + key, name: f.name, size: f.size, source: "local",
       date: dateFromName(f.name, f.lastModified),
       thumb: url, large: url, download: url,
+      path: DEVICE_ROOT + (dir ? "/" + dir : ""),
     });
     added++;
   }
@@ -1007,14 +1034,16 @@ function addLocalFiles(files){
   return added;
 }
 
-async function walkDir(handle, out, depth){
+async function walkDir(handle, out, depth, prefix){
   for await (const entry of handle.values()){
     if (entry.kind === "file"){
-      if (IMG_RE.test(entry.name)){ try { out.push(await entry.getFile()); } catch(e){} }
+      if (IMG_RE.test(entry.name)){
+        try { out.push({ file: await entry.getFile(), rel: prefix + entry.name }); } catch(e){}
+      }
     } else if (entry.kind === "directory" && depth < 10){
       // skip Android's hidden / no-media-style folders
       if (entry.name.startsWith(".")) continue;
-      await walkDir(entry, out, depth + 1);
+      await walkDir(entry, out, depth + 1, prefix + entry.name + "/");
     }
   }
 }
@@ -1025,7 +1054,7 @@ async function browseLocal(){
     try {
       const handle = await window.showDirectoryPicker();
       $("scanbar").style.display = "flex"; $("scanText").textContent = "Reading device photos…";
-      const out = []; await walkDir(handle, out, 0);
+      const out = []; await walkDir(handle, out, 0, handle.name + "/");
       const n = addLocalFiles(out);
       $("scanbar").style.display = "none";
       if (!n) alert("No images found in that folder.");
@@ -1225,42 +1254,67 @@ $("localInput").onchange = (e) => {
    timeline is built, so it takes effect immediately. */
 const treeOpen = new Set([ROOT_PATH]);   // expanded nodes
 
-function buildFolderIndex(){
-  const nodes = new Map();
-  const mk = (path, name, parentPath) =>
-    ({ path, name, parentPath, kids: [], direct: 0, total: 0 });
-  nodes.set(ROOT_PATH, mk(ROOT_PATH, "OneDrive", null));
-  for (const f of folderTree){
-    if (!nodes.has(f.path)) nodes.set(f.path, mk(f.path, f.name, f.parentPath));
-  }
+const mkNode = (path, name, parentPath) =>
+  ({ path, name, parentPath, kids: [], direct: 0, total: 0 });
+
+function finishIndex(nodes, rootPath){
   for (const n of nodes.values()){
-    if (n.path === ROOT_PATH) continue;
-    const parent = nodes.get(n.parentPath) || nodes.get(ROOT_PATH);
-    parent.kids.push(n);
+    if (n.path === rootPath) continue;
+    (nodes.get(n.parentPath) || nodes.get(rootPath)).kids.push(n);
   }
-  for (const p of photos){ const n = nodes.get(p.path); if (n) n.direct++; }
   const roll = (n) => { n.total = n.direct + n.kids.reduce((s,k) => s + roll(k), 0); return n.total; };
-  roll(nodes.get(ROOT_PATH));
+  roll(nodes.get(rootPath));
   for (const n of nodes.values()){
     n.kids.sort((a,b) => (b.total - a.total) || a.name.localeCompare(b.name));
   }
-  return nodes.get(ROOT_PATH);
+  return nodes.get(rootPath);
+}
+
+function buildFolderIndex(){
+  const nodes = new Map();
+  nodes.set(ROOT_PATH, mkNode(ROOT_PATH, "OneDrive", null));
+  for (const f of folderTree){
+    if (!nodes.has(f.path)) nodes.set(f.path, mkNode(f.path, f.name, f.parentPath));
+  }
+  for (const p of photos){ const n = nodes.get(p.path); if (n) n.direct++; }
+  return finishIndex(nodes, ROOT_PATH);
+}
+
+/* The device tree is derived from the paths of the photos we picked up —
+   there's no directory listing to keep, so ancestors are created on demand. */
+function buildDeviceIndex(){
+  const nodes = new Map();
+  nodes.set(DEVICE_ROOT, mkNode(DEVICE_ROOT, "This device", null));
+  for (const p of localPhotos){
+    const path = p.path || DEVICE_ROOT;
+    if (!nodes.has(path)){
+      const parts = path.slice(DEVICE_ROOT.length).replace(/^\//, "").split("/").filter(Boolean);
+      let cur = DEVICE_ROOT;
+      for (const part of parts){
+        const next = cur + "/" + part;
+        if (!nodes.has(next)) nodes.set(next, mkNode(next, part, cur));
+        cur = next;
+      }
+    }
+    nodes.get(path).direct++;
+  }
+  return finishIndex(nodes, DEVICE_ROOT);
 }
 
 const CHEVRON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>';
 
-function folderRow(node, depth, parentHidden){
+function folderRow(node, depth, parentHidden, hasKids){
   const selfHidden = hiddenPaths.includes(node.path);
   const hidden = parentHidden || selfHidden;
   const nomedia = honorNomedia && excludedPaths.includes(node.path);
   const row = document.createElement("div");
   row.className = "fld" + (hidden || nomedia ? " off" : "") + (nomedia ? " nomedia" : "") +
-                  (node.path === ROOT_PATH ? " root" : "");
+                  (node.path === ROOT_PATH || node.path === DEVICE_ROOT ? " root" : "");
   row.style.paddingLeft = (6 + depth * 15) + "px";
 
   const tw = document.createElement("button");
   tw.className = "tw" + (treeOpen.has(node.path) ? " open" : "");
-  if (node.kids.length){
+  if (hasKids){   // only when something would actually appear
     tw.innerHTML = CHEVRON;
     tw.onclick = (e) => {
       e.stopPropagation();
@@ -1283,7 +1337,7 @@ function folderRow(node, depth, parentHidden){
   nm.className = "nm";
   nm.textContent = node.name + (nomedia ? "  (.nomedia)" : "");
   nm.onclick = () => {
-    if (!node.kids.length) return;
+    if (!hasKids) return;
     if (treeOpen.has(node.path)) treeOpen.delete(node.path); else treeOpen.add(node.path);
     renderFolderTree();
   };
@@ -1296,67 +1350,113 @@ function folderRow(node, depth, parentHidden){
   return row;
 }
 
-function renderFolderTree(){
-  const el = $("folderTreeEl");
-  el.innerHTML = "";
-  if (!folderTree.length){
-    el.innerHTML = '<p class="note" style="padding:16px">No folder list yet — it is recorded during a ' +
-                   'full scan. Choose Rescan OneDrive from the menu, then come back.</p>';
-    return;
-  }
-  const root = buildFolderIndex();
-
-  // With the eye toggle on, drop branches with no photos anywhere inside.
-  // A folder still shows if it's .nomedia-marked or one you hid — otherwise
-  // hiding a folder would remove the only way to unhide it.
+/* With the eye toggle on, drop branches with no photos anywhere inside.
+   A folder still shows if it's .nomedia-marked or one YOU unticked —
+   otherwise hiding a folder would remove the only way to unhide it.
+   Folders auto-unticked for being empty are not kept on that account. */
+function computeKeepMap(root){
   const keep = new Map();
   const worthShowing = (n) =>
-    n.total > 0 || excludedPaths.includes(n.path) || hiddenPaths.includes(n.path);
-  const computeKeep = (n) => {
+    n.total > 0 || excludedPaths.includes(n.path) ||
+    (hiddenPaths.includes(n.path) && !autoHidden.includes(n.path));
+  const walk = (n) => {
     let k = worthShowing(n);
-    for (const c of n.kids){ if (computeKeep(c)) k = true; }   // no short-circuit
+    for (const c of n.kids){ if (walk(c)) k = true; }   // no short-circuit
     keep.set(n.path, k);
     return k;
   };
-  computeKeep(root);
+  walk(root);
+  return keep;
+}
 
+function renderFolderTree(){
+  const el = $("folderTreeEl");
+  el.innerHTML = "";
   const frag = document.createDocumentFragment();
   let skipped = 0;
-  const walk = (node, depth, parentHidden) => {
-    frag.appendChild(folderRow(node, depth, parentHidden));
-    if (!treeOpen.has(node.path)) return;
-    const hidden = parentHidden || hiddenPaths.includes(node.path);
-    for (const k of node.kids){
-      if (onlyWithPhotos && !keep.get(k.path)){ skipped++; continue; }
-      walk(k, depth + 1, hidden);
-    }
+
+  const addTree = (root) => {
+    const keep = computeKeepMap(root);
+    const visibleKids = (n) =>
+      onlyWithPhotos ? n.kids.filter(k => keep.get(k.path)) : n.kids;
+    const walk = (node, depth, parentHidden) => {
+      const kids = visibleKids(node);
+      frag.appendChild(folderRow(node, depth, parentHidden, kids.length > 0));
+      if (!treeOpen.has(node.path)) return;
+      const hidden = parentHidden || hiddenPaths.includes(node.path);
+      skipped += node.kids.length - kids.length;
+      for (const k of kids) walk(k, depth + 1, hidden);
+    };
+    walk(root, 0, false);
   };
-  walk(root, 0, false);
+
+  if (folderTree.length) addTree(buildFolderIndex());
+  if (localPhotos.length) addTree(buildDeviceIndex());
+
+  if (!frag.childNodes.length){
+    el.innerHTML = '<p class="note" style="padding:16px">No folder list yet — the OneDrive tree is ' +
+                   'recorded during a full scan. Choose Rescan OneDrive from the menu, then come back. ' +
+                   'Device folders appear once you add photos from this device.</p>';
+    return;
+  }
   el.appendChild(frag);
 
   $("foldersNote").textContent = skipped
     ? skipped.toLocaleString() + " empty folder" + (skipped === 1 ? "" : "s") +
-      " hidden from this list. Unticking a folder hides it and everything inside it; tick OneDrive at the top to unhide everything."
+      " left out of this list — turn off “Only folders with photos” in options to see them."
     : "Unticking a folder hides it and everything inside it; ticking it back shows the lot again. Changes apply straight away — no rescan needed.";
 }
 
+function saveFolderPrefs(){
+  lsSet("lumen_hidden", JSON.stringify(hiddenPaths));
+  lsSet("lumen_autohidden", JSON.stringify(autoHidden));
+  lsSet("lumen_ticked", JSON.stringify(userTicked));
+}
+
 function setFolderVisible(path, visible){
-  // Ticking a folder shows its whole subtree, clearing anything hidden inside
-  // it — so ticking the root brings everything back.
+  const under = (p) => p === path || p.startsWith(path + "/");
   if (visible){
-    hiddenPaths = hiddenPaths.filter(p => p !== path && !p.startsWith(path + "/"));
+    // Ticking a folder shows its whole subtree, clearing anything hidden
+    // inside it — so ticking a root brings everything back. Remember the
+    // choice so a later scan doesn't auto-untick it again for being empty.
+    hiddenPaths = hiddenPaths.filter(p => !under(p));
+    autoHidden = autoHidden.filter(p => !under(p));
+    if (!userTicked.includes(path)) userTicked.push(path);
   } else if (!hiddenPaths.includes(path)){
-    // Drop now-redundant descendants, then hide this whole subtree.
     hiddenPaths = hiddenPaths.filter(p => !p.startsWith(path + "/"));
     hiddenPaths.push(path);
+    userTicked = userTicked.filter(p => !under(p));
   }
-  lsSet("lumen_hidden", JSON.stringify(hiddenPaths));
+  saveFolderPrefs();
   renderFolderTree();
   refreshTimeline(true);
 }
 
+/* After a completed scan, untick folders that held no photos, so anything
+   later dropped into them stays out of the timeline until you opt in.
+   Folders you've explicitly ticked are left alone. */
+function autoHideEmptyFolders(){
+  const before = hiddenPaths.length;
+  const walk = (n) => {
+    if (n.path !== ROOT_PATH && n.total === 0){
+      if (!userTicked.includes(n.path) && !hiddenPaths.includes(n.path)){
+        hiddenPaths.push(n.path); autoHidden.push(n.path);
+      }
+      return;   // whole subtree is covered by this one entry
+    }
+    for (const k of n.kids) walk(k);
+  };
+  walk(buildFolderIndex());
+  if (hiddenPaths.length !== before) saveFolderPrefs();
+}
+
 function openFolders(){ $("folders").classList.add("open"); renderFolderTree(); }
-function closeFolders(){ $("folders").classList.remove("open"); }
+function closeFolders(){ $("folders").classList.remove("open"); setFldConfig(false); }
+function setFldConfig(open){
+  $("fldConfig").classList.toggle("open", open);
+  $("fldCog").setAttribute("aria-expanded", open ? "true" : "false");
+}
+$("fldCog").onclick = () => setFldConfig(!$("fldConfig").classList.contains("open"));
 $("menuFolders").onclick = () => { setMenu(false); openFolders(); };
 $("foldersClose").onclick = closeFolders;
 $("withPhotosToggle").onchange = () => {
@@ -1530,7 +1630,10 @@ window.addEventListener("appinstalled", () => { installEvent = null; showInstall
 /* ---- Boot ---- */
 (async () => {
   // Restore folder-visibility settings before anything renders.
-  try { hiddenPaths = JSON.parse(lsGet("lumen_hidden") || "[]") || []; } catch(e){ hiddenPaths = []; }
+  const readList = (k) => { try { return JSON.parse(lsGet(k) || "[]") || []; } catch(e){ return []; } };
+  hiddenPaths = readList("lumen_hidden");
+  autoHidden  = readList("lumen_autohidden");
+  userTicked  = readList("lumen_ticked");
   honorNomedia = lsGet("lumen_nomedia") !== "0";
   $("nomediaToggle").checked = honorNomedia;
   onlyWithPhotos = lsGet("lumen_onlyphotos") !== "0";
