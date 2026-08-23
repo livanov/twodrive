@@ -105,6 +105,29 @@
   }
   .icon-btn:active{background:var(--surface-2)}
 
+  /* ---------- Hamburger menu ---------- */
+  .menu-backdrop{position:fixed; inset:0; z-index:55; display:none}
+  .menu-backdrop.open{display:block}
+  .menu{
+    position:fixed; z-index:60; right:10px; top:calc(56px + env(safe-area-inset-top));
+    width:252px; max-width:calc(100vw - 20px); display:none;
+    background:var(--surface); border:1px solid var(--line); border-radius:14px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6); overflow:hidden;
+  }
+  .menu.open{display:block}
+  .menu-acct{display:flex; align-items:center; gap:11px; padding:14px;
+    border-bottom:1px solid var(--line)}
+  .avatar{width:38px; height:38px; border-radius:50%; flex:none; overflow:hidden;
+    background:var(--surface-2); color:var(--muted); font-size:14px; font-weight:650;
+    display:grid; place-items:center; object-fit:cover}
+  .acct-txt{min-width:0}
+  .acct-name{font-size:14.5px; font-weight:620; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .acct-mail{font-size:12.5px; color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .menu-item{display:flex; align-items:center; gap:12px; width:100%; padding:13px 15px;
+    background:transparent; border:none; color:var(--text); font-size:14.5px; text-align:left}
+  .menu-item:active{background:var(--surface-2)}
+  .menu-item span{width:18px; text-align:center; color:var(--muted)}
+
   .month{
     position:sticky; top:calc(58px + env(safe-area-inset-top)); z-index:10;
     padding:18px 16px 8px; font-size:14px; font-weight:680; letter-spacing:-.01em;
@@ -204,8 +227,21 @@
     <span class="spacer"></span>
     <button class="icon-btn" id="localBtn2" title="Add photos from this device">📱</button>
     <button class="icon-btn" id="installBtn2" title="Install app" style="display:none">⤓</button>
-    <button class="icon-btn" id="refreshBtn" title="Rescan">↻</button>
-    <button class="icon-btn" id="signoutBtn" title="Sign out">⏻</button>
+    <button class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
+  </div>
+
+  <div class="menu-backdrop" id="menuBackdrop"></div>
+  <div class="menu" id="menu" role="menu">
+    <div class="menu-acct">
+      <img class="avatar" id="avatarImg" alt="" style="display:none" />
+      <div class="avatar" id="avatarIni">·</div>
+      <div class="acct-txt">
+        <div class="acct-name" id="acctName">Signed in</div>
+        <div class="acct-mail" id="acctMail"></div>
+      </div>
+    </div>
+    <button class="menu-item" id="menuRefresh" role="menuitem"><span>↻</span>Rescan OneDrive</button>
+    <button class="menu-item" id="menuSignout" role="menuitem"><span>⏻</span>Sign out</button>
   </div>
   <input type="file" id="localInput" accept="image/*" multiple webkitdirectory style="display:none" />
   <div id="stream"></div>
@@ -753,6 +789,13 @@ function armBackGuard(){
 }
 window.addEventListener("popstate", () => {
   if (lb.style.display === "flex"){ lbHistory = false; hideLb(); return; }
+  const menu = document.getElementById("menu");
+  if (menu && menu.classList.contains("open")){
+    setMenu(false);
+    // The menu has no history entry of its own, so put the guard back.
+    if (guardPushed){ try { history.pushState({ lumenGuard: true }, ""); } catch(e){} }
+    return;
+  }
   if (!guardPushed) return;                       // browser tab → normal Back
   if (backArmed){                                 // second press: really leave
     guardPushed = false; backArmed = false; clearTimeout(backTimer);
@@ -885,6 +928,7 @@ async function startGallery(force){
   show("gallery");
   refreshTimeline(true);
   setupInfiniteScroll();
+  loadAccountInfo();   // fills the menu header (name, email, picture)
 
   // 2) Sync with OneDrive — incremental if we have a delta token, else full.
   $("scanbar").style.display = "flex";
@@ -959,13 +1003,60 @@ $("connectBtn").onclick = async () => {
     $("setupErr").style.display = "block";
   }
 };
-$("resetBtn").onclick = async () => {
+async function signOut(){
   lsDel("lumen_cid");
   try { if (pca){ const a = pca.getActiveAccount(); if (a) await pca.logoutRedirect({ account:a }); } } catch(e){}
   location.reload();
-};
-$("refreshBtn").onclick = () => startGallery(true);   // full rescan, ignore cache
-$("signoutBtn").onclick = $("resetBtn").onclick;
+}
+$("resetBtn").onclick = signOut;
+
+/* ---- Hamburger menu ---- */
+function setMenu(open){
+  $("menu").classList.toggle("open", open);
+  $("menuBackdrop").classList.toggle("open", open);
+  $("menuBtn").setAttribute("aria-expanded", open ? "true" : "false");
+}
+$("menuBtn").onclick = (e) => { e.stopPropagation(); setMenu(!$("menu").classList.contains("open")); };
+$("menuBackdrop").onclick = () => setMenu(false);
+$("menuRefresh").onclick = () => { setMenu(false); startGallery(true); };   // full rescan
+$("menuSignout").onclick = () => { setMenu(false); signOut(); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") setMenu(false); });
+
+/* ---- Who am I: name, email and profile picture for the menu header ---- */
+function initialsOf(name, mail){
+  const src = (name || mail || "").trim();
+  if (!src) return "·";
+  const parts = src.split(/[\s@._-]+/).filter(Boolean);
+  return ((parts[0] || "")[0] + (parts.length > 1 ? (parts[1] || "")[0] : "")).toUpperCase() || "·";
+}
+let acctLoaded = false;
+async function loadAccountInfo(){
+  if (acctLoaded) return; acctLoaded = true;
+  const acct = pca && pca.getActiveAccount();
+  let name = (acct && acct.name) || "", mail = (acct && acct.username) || "";
+  const paint = () => {
+    $("acctName").textContent = name || mail || "Signed in";
+    $("acctMail").textContent = name ? mail : "";
+    $("avatarIni").textContent = initialsOf(name, mail);
+  };
+  paint();   // show what MSAL already knows, instantly
+  try {
+    const me = await graphGet(GRAPH + "/me");
+    name = me.displayName || name;
+    mail = me.mail || me.userPrincipalName || mail;
+    paint();
+  } catch(e){}
+  try {   // photo is binary, so it can't go through graphGet
+    const tok = _token || await getToken();
+    const r = await fetch(GRAPH + "/me/photo/$value", { headers: { Authorization: "Bearer " + tok } });
+    if (r.ok){
+      const url = URL.createObjectURL(await r.blob());
+      $("avatarImg").src = url;
+      $("avatarImg").style.display = "block";
+      $("avatarIni").style.display = "none";
+    }
+  } catch(e){}   // personal accounts often have no photo — initials stay
+}
 
 /* ---- Local device photos wiring ---- */
 $("localBtn").onclick = browseLocal;
