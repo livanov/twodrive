@@ -1147,15 +1147,34 @@ function refreshTimeline(force){
 let lbIndex = -1;
 let lbHistory = false;   // did we push a history entry for the open lightbox?
 const lb = $("lightbox");
+/* ---- Deep links. The open photo and the current tab live in the URL hash,
+   so a reload (or a shared link) comes back to the same place. ---- */
+const hashParams = () => new URLSearchParams(location.hash.replace(/^#/, ""));
+const bareUrl = () => location.pathname + location.search;
+function writeHash(params, push){
+  const q = params.toString();
+  const url = q ? "#" + q : bareUrl();
+  try {
+    if (push) history.pushState({ lumenLb: true }, "", url);
+    else history.replaceState(history.state, "", url);
+  } catch(e){}
+}
+/* An auth response also arrives in the hash — never treat that as a deep link. */
+const isAuthHash = () => /(^|[#&])(code|error|id_token|state)=/.test(location.hash);
+
 function openLightbox(p){
   lbIndex = view.indexOf(p);
   showLb();
   lb.style.display = "flex";
   document.body.style.overflow = "hidden";
   // Push a history entry so Android's Back closes the photo instead of
-  // leaving the app (nothing else to go back to in a standalone PWA).
-  try { history.pushState({ lumenLb: true }, ""); lbHistory = true; }
-  catch(e){ lbHistory = false; }
+  // leaving the app (nothing else to go back to in a standalone PWA), and
+  // put the photo in the URL so a reload reopens it.
+  try {
+    const q = hashParams(); q.set("photo", p.id);
+    writeHash(q, true);
+    lbHistory = true;
+  } catch(e){ lbHistory = false; }
 }
 const fmtBytes = (n) => {
   if (n == null) return "";
@@ -1179,6 +1198,10 @@ const prettyPath = (path) => {
 
 function showLb(){
   const p = view[lbIndex]; if (!p) return;
+  // Keep the URL pointing at whichever photo is on screen (arrows, delete).
+  if (lb.style.display === "flex"){
+    const q = hashParams(); q.set("photo", p.id); writeHash(q, false);
+  }
   const img = $("lbImg");
   img.src = p.large || p.download || p.thumb || "";
   $("lbName").textContent = p.name || "";
@@ -1361,7 +1384,11 @@ const escapeHtml = (s) => String(s).replace(/[&<>"]/g,
 $("lbDelete").onclick = deleteCurrent;
 $("lbMove").onclick = moveCurrent;
 
-function hideLb(){ lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1; }
+function hideLb(){
+  lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1;
+  const q = hashParams();
+  if (q.has("photo")){ q.delete("photo"); writeHash(q, false); }
+}
 function closeLb(){
   // If we pushed an entry, go back — popstate then hides the lightbox, so the
   // history stack stays balanced whether you tap ✕ or the system Back button.
@@ -1510,11 +1537,32 @@ function show(id){
 
 /* One owner for the scan chip, so a stale hide-timer from a previous scan
    can't dismiss the current one (or leave it up after this one ends). */
-let scanbarTimer = null;
-function showScanbar(){
+let scanbarTimer = null, scanTick = null, lastProgressAt = 0;
+function showScanbar(text){
   if (scanbarTimer){ clearTimeout(scanbarTimer); scanbarTimer = null; }
+  if (text) $("scanText").textContent = text;
+  $("scanbar").classList.remove("tappable");
   $("scanbar").style.display = "flex";
+  lastProgressAt = Date.now();
+  if (!scanTick) scanTick = setInterval(scanHeartbeat, 1000);
 }
+function stopScanTick(){ if (scanTick){ clearInterval(scanTick); scanTick = null; } }
+/* Say what is actually happening when no progress arrives — a long throttle
+   cooldown or a stalled request used to leave a bare "Scanning…" sitting
+   there, which read as the app being stuck (or lying). */
+function scanHeartbeat(){
+  if (!scanning){ stopScanTick(); return; }
+  const now = Date.now();
+  if (now < _cooldownUntil){
+    $("scanText").textContent = "Rate-limited by OneDrive — retrying in " +
+      Math.ceil((_cooldownUntil - now) / 1000) + "s · " +
+      photos.length.toLocaleString() + " photos so far";
+  } else if (now - lastProgressAt > 8000){
+    $("scanText").textContent = "Waiting for OneDrive… " +
+      photos.length.toLocaleString() + " photos so far";
+  }
+}
+const noteProgress = () => { lastProgressAt = Date.now(); };
 function hideScanbarSoon(ms){
   if (scanbarTimer) clearTimeout(scanbarTimer);
   scanbarTimer = setTimeout(() => {
@@ -1573,6 +1621,7 @@ async function startGallery(force){
   refreshTimeline(true);
   setupInfiniteScroll();
   loadAccountInfo();   // fills the menu header (name, email, picture)
+  restoreFromHash();   // reopen whatever the URL points at
   // Show the last known albums instantly; opening the tab refreshes them.
   idbGet(cacheKey + ":albums").then(c => {
     if (c && c.albums && c.albums.length && !albums.length){
@@ -1583,13 +1632,14 @@ async function startGallery(force){
 
   // 2) Sync with OneDrive — incremental if we have a delta token, else full.
   scanning = true; acquireWake();
-  showScanbar();
+  showScanbar("Contacting OneDrive…");
   try {
     let needFull = !deltaLink || !!resumeFrom;
     if (deltaLink && !resumeFrom){
       $("scanText").textContent = "Checking for new photos…";
       try {
         const { changed, removed } = await deltaSync(n => {
+          noteProgress();
           $("scanText").textContent = "Syncing… " + n.toLocaleString() + " photos";
         });
         if (changed || removed){ refreshTimeline(true); setupInfiniteScroll(); }
@@ -1600,6 +1650,7 @@ async function startGallery(force){
     if (needFull){
       const verb = resumeFrom ? "Resuming scan… " : "Scanning… ";
       await fullScan((n, f) => {
+        noteProgress();
         // Include what's still queued, so it's obvious whether it's still working.
         $("scanText").textContent = verb + n.toLocaleString() + " photos · " + f +
           " folders" + (scanPending.size ? " · " + scanPending.size + " to go" : " · finishing");
@@ -1609,6 +1660,7 @@ async function startGallery(force){
       refreshTimeline(true);
       setupInfiniteScroll();
     }
+    restoreFromHash();   // the deep-linked photo may only exist now
     await persistCache();
     if (!view.length){
       $("empty").innerHTML = EMPTY_HTML;   // undo any earlier failure message
@@ -1644,7 +1696,10 @@ async function startGallery(force){
   } finally {
     scanning = false;
     scanPending = new Set(); scanBusy = new Set();
+    stopScanTick();
     releaseWake();
+    // Safety net: never leave the chip up when nothing is running.
+    if (!$("scanbar").classList.contains("tappable")) hideScanbarSoon(2000);
     if ($("folders").classList.contains("open")) renderFolderTree();
   }
 }
@@ -1843,6 +1898,25 @@ function renderAlbums(state, err){
   el.appendChild(frag);
 }
 
+/* Reopen the tab / photo named in the URL. Returns false if the photo isn't
+   loaded yet, so the caller can try again once the sync has run. */
+let hashRestored = false;
+function restoreFromHash(){
+  if (hashRestored || isAuthHash()) return true;
+  const q = hashParams();
+  if (q.get("tab") === "albums" && tab !== "albums") setTab("albums");
+  const pid = q.get("photo");
+  if (!pid){ hashRestored = true; return true; }
+  const p = view.find(x => x.id === pid);
+  if (!p) return false;                       // not scanned yet — retry later
+  hashRestored = true;
+  // Put a plain gallery entry underneath, so Back closes the photo and lands
+  // here rather than leaving the app.
+  try { history.replaceState(history.state, "", bareUrl()); } catch(e){}
+  openLightbox(p);
+  return true;
+}
+
 let tab = "timeline";
 function setTab(which){
   tab = which;
@@ -1854,6 +1928,9 @@ function setTab(which){
   $("tabTimeline").classList.toggle("on", !onAlbums);
   $("tabAlbums").setAttribute("aria-selected", onAlbums ? "true" : "false");
   $("tabTimeline").setAttribute("aria-selected", onAlbums ? "false" : "true");
+  const q = hashParams();
+  if (onAlbums) q.set("tab", "albums"); else q.delete("tab");
+  writeHash(q, false);       // replace, so tabs don't pile up history entries
   if (onAlbums) loadAlbums();
 }
 $("tabTimeline").onclick = () => setTab("timeline");
