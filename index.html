@@ -433,6 +433,8 @@ let bootWatchdog = null; // fires if startup stalls on the splash
 let pca = null;          // MSAL instance
 let photos = [];         // {id,name,date,thumb,large,download}
 let deltaLink = null;    // Graph delta token for incremental rescans
+const ROOT_PATH = "/drive/root:";
+const DEVICE_ROOT = "device:";
 let excludedPaths = [];  // folder paths carrying a .nomedia (auto-detected)
 let hiddenPaths = [];    // folder paths currently unticked (user or auto)
 let autoHidden = [];     // subset of the above added automatically (empty at scan time)
@@ -462,8 +464,6 @@ async function acquireWake(){
 function releaseWake(){
   try { if (wakeLock){ wakeLock.release(); wakeLock = null; } } catch(e){}
 }
-const ROOT_PATH = "/drive/root:";
-const DEVICE_ROOT = "device:";
 
 /* A path is hidden if it is, or sits under, a folder the user unticked. */
 function isHidden(path){
