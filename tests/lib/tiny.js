@@ -10,9 +10,10 @@ function test(name, fn, opts) {
 }
 /* Documented-as-skipped test: still listed in the summary, never run.
    Used for behaviour we believe is buggy (see tests/README.md) so the
-   suite stays green while the finding stays visible. */
-test.skip = function (name, reason) {
-  registry.push({ name, fn: null, skip: true, reason: reason || "skipped" });
+   suite stays green while the finding stays visible. `fn` is kept so the
+   author can delete the `.skip` once the bug is fixed. */
+test.skip = function (name, reason, fn) {
+  registry.push({ name, fn, skip: true, reason: reason || "skipped", timeout: 60000 });
 };
 
 function drain() {

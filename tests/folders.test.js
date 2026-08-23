@@ -199,8 +199,7 @@ test("25 · empty folders are auto-unticked; a folder you tick back stays ticked
     assert.eq((await app.hiddenPaths()).includes(P("Empty")), false);
 
     /* Full rescan must not undo that choice. */
-    await app.page.evaluate(() => startGallery(true));
-    await app.page.waitForTimeout(200);
+    await app.rescan();
     await app.waitForScan(25000);
 
     hidden = await app.hiddenPaths();

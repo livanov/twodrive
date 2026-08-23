@@ -51,7 +51,7 @@ async function runGroup(group, opts, results) {
   const lines = [];
   for (const t of group.tests) {
     if (opts.grep && !opts.grep.test(t.name)) continue;
-    if (t.skip) {
+    if (t.skip && !(process.env.LUMEN_RUN_SKIPPED && t.fn)) {
       results.push({ file: group.file, name: t.name, status: "skip", reason: t.reason, ms: 0 });
       lines.push(`  ${yellow("SKIP")} ${t.name} ${dim("— " + t.reason)}`);
       continue;

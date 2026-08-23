@@ -112,6 +112,21 @@ class App {
       undefined, { timeout, polling: 50 });
   }
 
+  /* Resolves once a (re)scan has actually begun — use before waitForScan()
+     when you have just triggered one, or you may match the previous run's
+     "Scan complete" text. */
+  async waitForScanStart(timeout = 10000) {
+    await this.page.waitForFunction(() => typeof scanning !== "undefined" && scanning === true,
+      undefined, { timeout, polling: 20 });
+  }
+
+  /* Kick off a forced rescan the way the Rescan button does, without waiting
+     for it to finish. */
+  async rescan() {
+    await this.page.evaluate(() => { startGallery(true); });
+    await this.waitForScanStart();
+  }
+
   /* Resolves once the scan loop has settled (complete, up-to-date, or failed). */
   async waitForScan(timeout = 30000) {
     await this.page.waitForFunction(() => {
