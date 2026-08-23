@@ -171,6 +171,19 @@
     padding:10px 18px; font-size:13.5px; color:var(--text); white-space:nowrap;
     box-shadow:0 8px 30px rgba(0,0,0,.5);
   }
+  /* ---------- Diagnostics ---------- */
+  #diag{position:fixed; inset:0; z-index:200; background:var(--bg); display:none;
+    flex-direction:column; padding-top:env(safe-area-inset-top)}
+  #diag.open{display:flex}
+  .diag-bar{display:flex; align-items:center; gap:10px; padding:10px 14px;
+    border-bottom:1px solid var(--line); font-size:15px}
+  #diagOut{flex:1; overflow:auto; margin:0; padding:14px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px;
+    line-height:1.55; color:var(--text); white-space:pre-wrap; word-break:break-word}
+  .diag-actions{border-top:1px solid var(--line); padding:12px 14px calc(14px + env(safe-area-inset-bottom))}
+  .diag-actions .btn{margin-top:8px}
+  .diag-actions .note{margin-top:10px}
+
   .empty{display:none; text-align:center; color:var(--muted); padding:80px 30px; line-height:1.6}
   .empty h2{color:var(--text); font-weight:640; margin:0 0 8px}
 
@@ -210,6 +223,7 @@
     <button class="btn ghost" id="localBtn">📱 Browse photos on this device</button>
     <button class="btn ghost" id="installBtn" style="display:none"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4 19h16"/></svg>Install app on this device</button>
     <button class="btn ghost" id="resetBtn" style="display:none">Use a different account / ID</button>
+    <button class="btn ghost" id="diagBtn">Diagnostics</button>
     <p class="err" id="setupErr"></p>
 
     <details class="help" id="advanced">
@@ -249,6 +263,8 @@
     </div>
     <button class="menu-item" id="menuRefresh" role="menuitem">
       <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/></svg></span>Rescan OneDrive</button>
+    <button class="menu-item" id="menuDiag" role="menuitem">
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg></span>Diagnostics</button>
     <button class="menu-item" id="menuSignout" role="menuitem">
       <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg></span>Sign out</button>
   </div>
@@ -264,6 +280,24 @@
 
 <div class="scanbar" id="scanbar"><span class="pulse"></span><span id="scanText">Scanning…</span></div>
 <div class="toast" id="toast"></div>
+
+<!-- DIAGNOSTICS -->
+<div id="diag">
+  <div class="diag-bar">
+    <b>Diagnostics</b>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="diagCopy" title="Copy report">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button>
+    <button class="icon-btn" id="diagClose" title="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
+  </div>
+  <pre id="diagOut">…</pre>
+  <div class="diag-actions">
+    <button class="btn ghost" id="diagRerun">Run checks again</button>
+    <button class="btn ghost" id="diagReset">Repair: clear app cache &amp; reload</button>
+    <p class="note">Repair unregisters the service worker, clears the offline cache and the stored photo list, then reloads. It does not sign you out.</p>
+  </div>
+</div>
 
 <!-- LIGHTBOX -->
 <div id="lightbox">
@@ -290,6 +324,21 @@ const REDIRECT_URI = location.href.split("#")[0].split("?")[0];
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* ---- Error log, surfaced in the Diagnostics panel (no DevTools on a phone) ---- */
+const LOG = [];
+const errText = (e) => (e && (e.message || e.name)) ? (e.name ? e.name + ": " + e.message : e.message) : String(e);
+function logLine(s){
+  const t = new Date().toTimeString().slice(0,8);
+  LOG.push(t + "  " + s);
+  if (LOG.length > 120) LOG.shift();
+}
+window.addEventListener("error", (e) =>
+  logLine("JS error: " + (e.message || "?") + " @ " + (e.filename || "?") + ":" + (e.lineno || "?")));
+window.addEventListener("unhandledrejection", (e) =>
+  logLine("Unhandled rejection: " + errText(e.reason)));
+window.addEventListener("online",  () => logLine("network: online"));
+window.addEventListener("offline", () => logLine("network: OFFLINE"));
 
 /* localStorage that won't crash inside sandboxed previews */
 function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
@@ -424,6 +473,7 @@ async function graphGet(url, tries = 0){
   try {
     r = await fetch(url, { headers: { Authorization: "Bearer " + _token } });
   } catch(e){                                   // transient network blip
+    logLine("fetch failed (try " + tries + "): " + errText(e) + " — " + url.slice(0, 90));
     if (tries < 4){ await sleep(1000 * (tries + 1)); return graphGet(url, tries + 1); }
     throw e;
   }
@@ -436,7 +486,11 @@ async function graphGet(url, tries = 0){
     await sleep(secs * 1000);
     return graphGet(url, tries + 1);
   }
-  if (!r.ok) throw new Error("Graph " + r.status + ": " + (await r.text()).slice(0,160));
+  if (!r.ok){
+    const body = (await r.text()).slice(0,160);
+    logLine("Graph " + r.status + " — " + url.slice(0, 90) + " — " + body.slice(0, 80));
+    throw new Error("Graph " + r.status + ": " + body);
+  }
   return r.json();
 }
 
@@ -967,6 +1021,7 @@ async function startGallery(force){
     $("scanbar").style.display = "none";
     if (!view.length) $("empty").style.display = "block";
   } catch (e){
+    logLine("scan aborted: " + errText(e));
     // Keep whatever we managed to load and persist it, so a reload shows it.
     if (photos.length){ refreshTimeline(true); setupInfiniteScroll(); await persistCache(); }
     $("scanText").textContent = photos.length
@@ -975,7 +1030,12 @@ async function startGallery(force){
     if (!photos.length && !haveCache){
       $("scanbar").style.display = "none";
       $("empty").style.display = "block";
-      $("empty").innerHTML = "<h2>Couldn't load photos</h2>" + String(e.message || e);
+      const hint = /failed to fetch|networkerror|load failed/i.test(errText(e))
+        ? "The request never reached Microsoft — usually no connection, or a wedged offline cache. " +
+          "Open the menu → Diagnostics to see which step fails, and try Repair there."
+        : "";
+      $("empty").innerHTML = "<h2>Couldn't load photos</h2>" + errText(e) +
+        (hint ? "<br><br>" + hint : "");
     }
   }
 }
@@ -1076,6 +1136,134 @@ $("localInput").onchange = (e) => {
   if (!n) alert("No images found in that selection.");
 };
 
+/* ============================ Diagnostics ============================
+   No DevTools on a phone, so the app reports on itself: what it can
+   reach, what auth thinks, what's cached, and the recent error log. */
+function openDiag(){ $("diag").classList.add("open"); runDiag(); }
+function closeDiag(){ $("diag").classList.remove("open"); }
+$("menuDiag").onclick = () => { setMenu(false); openDiag(); };
+$("diagBtn").onclick = openDiag;
+$("diagClose").onclick = closeDiag;
+$("diagRerun").onclick = () => runDiag();
+$("diagCopy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("diagOut").textContent); toast("Report copied"); }
+  catch(e){ toast("Couldn't copy — select the text instead", 3000); }
+};
+$("diagReset").onclick = async () => {
+  $("diagOut").textContent = "Repairing…";
+  try { if ("serviceWorker" in navigator){
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(regs.map(r => r.unregister()));
+  } } catch(e){}
+  try { const keys = await caches.keys(); await Promise.all(keys.map(k => caches.delete(k))); } catch(e){}
+  try { _db = null; indexedDB.deleteDatabase(DB_NAME); } catch(e){}
+  location.reload();
+};
+
+/* Probe a URL and report status without throwing. */
+async function probe(label, url, opts){
+  const t0 = Date.now();
+  try {
+    const r = await fetch(url, Object.assign({ cache: "no-store" }, opts || {}));
+    return label + ": " + (r.type === "opaque" ? "reachable (opaque)" : r.status + " " + r.statusText) +
+           " (" + (Date.now() - t0) + "ms)";
+  } catch(e){
+    return label + ": FAILED — " + errText(e) + " (" + (Date.now() - t0) + "ms)";
+  }
+}
+
+async function runDiag(){
+  const out = $("diagOut"); const L = [];
+  const say = (s) => { L.push(s); out.textContent = L.join("\n"); };
+
+  say("LUMEN DIAGNOSTICS  " + new Date().toString());
+  say("");
+  say("— Environment —");
+  say("page url:     " + location.href);
+  say("redirect uri: " + REDIRECT_URI);
+  say("standalone:   " + isStandalone());
+  say("navigator.onLine: " + navigator.onLine);
+  say("userAgent:    " + navigator.userAgent);
+  say("");
+
+  say("— Service worker & caches —");
+  try {
+    if ("serviceWorker" in navigator){
+      const regs = await navigator.serviceWorker.getRegistrations();
+      say("registrations: " + regs.length +
+          (navigator.serviceWorker.controller ? " (page IS controlled)" : " (page NOT controlled)"));
+      regs.forEach(r => say("  scope " + r.scope +
+        (r.waiting ? " [update waiting]" : "") + (r.installing ? " [installing]" : "")));
+      const keys = await caches.keys();
+      say("cache buckets: " + (keys.join(", ") || "none"));
+    } else say("serviceWorker: unsupported");
+  } catch(e){ say("sw check failed: " + errText(e)); }
+  say("");
+
+  say("— Network reachability —");
+  say(await probe("own origin (manifest)", "manifest.webmanifest"));
+  say(await probe("microsoft login metadata",
+      "https://login.microsoftonline.com/consumers/v2.0/.well-known/openid-configuration"));
+  say(await probe("graph endpoint", GRAPH + "/$metadata", { method: "HEAD" }));
+  say(await probe("msal cdn", "https://cdnjs.cloudflare.com/ajax/libs/msal-browser/3.10.0/msal-browser.min.js",
+      { mode: "no-cors" }));
+  say("");
+
+  say("— Auth —");
+  say("msal library: " + (window.msal ? "loaded" : "NOT LOADED"));
+  say("client id:    " + (lsGet("lumen_cid") || DEFAULT_CID) + (lsGet("lumen_cid") ? " (saved)" : " (built-in)"));
+  let token = null;
+  try {
+    if (!pca) say("pca: not initialised");
+    else {
+      const accts = pca.getAllAccounts();
+      const act = pca.getActiveAccount();
+      say("accounts:     " + accts.length);
+      say("active:       " + (act ? (act.username || act.name || "?") : "none"));
+      if (act){
+        try {
+          const r = await pca.acquireTokenSilent({ scopes: SCOPES, account: act });
+          token = r.accessToken;
+          say("silent token: ok (expires " + (r.expiresOn ? new Date(r.expiresOn).toLocaleTimeString() : "?") + ")");
+        } catch(e){ say("silent token: FAILED — " + errText(e)); }
+      }
+    }
+  } catch(e){ say("auth check failed: " + errText(e)); }
+  say("");
+
+  say("— Graph calls —");
+  if (!token) say("skipped (no token)");
+  else {
+    for (const [label, url] of [["/me", GRAPH + "/me"], ["/me/drive", GRAPH + "/me/drive"]]){
+      try {
+        const t0 = Date.now();
+        const r = await fetch(url, { headers: { Authorization: "Bearer " + token } });
+        const body = await r.text();
+        say(label + ": " + r.status + " (" + (Date.now() - t0) + "ms)" +
+            (r.ok ? "" : " — " + body.slice(0, 120)));
+        if (r.status === 429) say("   Retry-After: " + (r.headers.get("Retry-After") || "(none)"));
+      } catch(e){ say(label + ": FAILED — " + errText(e)); }
+    }
+  }
+  say("");
+
+  say("— Local data —");
+  say("photos in memory: " + photos.length + " onedrive, " + localPhotos.length + " device, " + view.length + " shown");
+  say("deltaLink: " + (deltaLink ? "present (incremental sync ready)" : "none (full scan needed)"));
+  say("excluded (.nomedia) folders: " + excludedPaths.length);
+  try {
+    const acct = pca && pca.getActiveAccount();
+    const key = "photos:" + (acct ? acct.homeAccountId : "anon");
+    const c = await idbGet(key);
+    say("indexeddb cache: " + (c && c.photos ? c.photos.length + " photos, saved " +
+        new Date(c.savedAt || 0).toLocaleString() : "empty"));
+  } catch(e){ say("indexeddb: " + errText(e)); }
+  say("");
+
+  say("— Recent log (" + LOG.length + ") —");
+  say(LOG.length ? LOG.slice(-40).join("\n") : "(nothing logged)");
+}
+
 /* ---- PWA: service worker + install prompt ---- */
 if ("serviceWorker" in navigator){
   window.addEventListener("load", () => {
@@ -1109,8 +1297,12 @@ window.addEventListener("appinstalled", () => { installEvent = null; showInstall
     const ok = await bootWithClientId(saved);
     if (!ok){ show("setup"); }   // have an ID but signed out → let them connect
   } catch (e){
+    logLine("boot failed: " + errText(e));
     show("setup");
-    $("setupErr").textContent = "Couldn't restore your session: " + (e.message||e);
+    $("setupErr").textContent = "Couldn't restore your session: " + errText(e) +
+      (/failed to fetch|load failed/i.test(errText(e))
+        ? " — the app couldn't reach Microsoft. Tap Diagnostics below to see which step fails."
+        : "");
     $("setupErr").style.display = "block";
   }
 })();
