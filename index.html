@@ -126,7 +126,14 @@
   .menu-item{display:flex; align-items:center; gap:12px; width:100%; padding:13px 15px;
     background:transparent; border:none; color:var(--text); font-size:14.5px; text-align:left}
   .menu-item:active{background:var(--surface-2)}
-  .menu-item span{width:18px; text-align:center; color:var(--muted)}
+  .menu-item span{width:18px; flex:none; color:var(--muted); display:grid; place-items:center}
+  /* Inline SVGs instead of rare glyphs like ⏻/↻, which many Android fonts lack */
+  .menu-item svg{width:17px; height:17px; display:block; fill:none;
+    stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
+  .icon-btn svg{width:17px; height:17px; fill:none;
+    stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
+  .btn svg{width:16px; height:16px; vertical-align:-3px; margin-right:7px; fill:none;
+    stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round}
 
   .month{
     position:sticky; top:calc(58px + env(safe-area-inset-top)); z-index:10;
@@ -201,7 +208,7 @@
 
     <button class="btn" id="connectBtn">Connect OneDrive</button>
     <button class="btn ghost" id="localBtn">📱 Browse photos on this device</button>
-    <button class="btn ghost" id="installBtn" style="display:none">⤓ Install app on this device</button>
+    <button class="btn ghost" id="installBtn" style="display:none"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4 19h16"/></svg>Install app on this device</button>
     <button class="btn ghost" id="resetBtn" style="display:none">Use a different account / ID</button>
     <p class="err" id="setupErr"></p>
 
@@ -226,8 +233,8 @@
     <span class="count" id="count"></span>
     <span class="spacer"></span>
     <button class="icon-btn" id="localBtn2" title="Add photos from this device">📱</button>
-    <button class="icon-btn" id="installBtn2" title="Install app" style="display:none">⤓</button>
-    <button class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
+    <button class="icon-btn" id="installBtn2" title="Install app" style="display:none"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4 19h16"/></svg></button>
+    <button class="icon-btn" id="menuBtn" title="Menu" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg></button>
   </div>
 
   <div class="menu-backdrop" id="menuBackdrop"></div>
@@ -240,8 +247,10 @@
         <div class="acct-mail" id="acctMail"></div>
       </div>
     </div>
-    <button class="menu-item" id="menuRefresh" role="menuitem"><span>↻</span>Rescan OneDrive</button>
-    <button class="menu-item" id="menuSignout" role="menuitem"><span>⏻</span>Sign out</button>
+    <button class="menu-item" id="menuRefresh" role="menuitem">
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/></svg></span>Rescan OneDrive</button>
+    <button class="menu-item" id="menuSignout" role="menuitem">
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/></svg></span>Sign out</button>
   </div>
   <input type="file" id="localInput" accept="image/*" multiple webkitdirectory style="display:none" />
   <div id="stream"></div>
@@ -249,7 +258,7 @@
   <div class="empty" id="empty">
     <h2>No photos found</h2>
     Nothing with an image type turned up in this OneDrive.
-    If you just enabled OneDrive camera backup, give it time to upload, then tap ↻.
+    If you just enabled OneDrive camera backup, give it time to upload, then choose Rescan from the menu.
   </div>
 </div>
 
@@ -961,7 +970,7 @@ async function startGallery(force){
     // Keep whatever we managed to load and persist it, so a reload shows it.
     if (photos.length){ refreshTimeline(true); setupInfiniteScroll(); await persistCache(); }
     $("scanText").textContent = photos.length
-      ? "Paused (rate-limited) — tap ↻ to resume · " + photos.length.toLocaleString() + " photos"
+      ? "Paused (rate-limited) — Rescan from the menu to resume · " + photos.length.toLocaleString() + " photos"
       : "Couldn't reach OneDrive";
     if (!photos.length && !haveCache){
       $("scanbar").style.display = "none";
