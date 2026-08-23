@@ -121,7 +121,7 @@ test("17b · cells survive a folder-visibility change without re-downloading", a
   } finally { await app.close(); }
 }, { timeout: 40000 });
 
-test("18 · every Microsoft Graph request is a GET (read-only guarantee)", async () => {
+test("18 · browsing never writes: scanning and the lightbox issue GETs only", async () => {
   const app = await launchApp({ drive: demoDrive() });
   try {
     await app.goto();
@@ -141,7 +141,7 @@ test("18 · every Microsoft Graph request is a GET (read-only guarantee)", async
   } finally { await app.close(); }
 }, { timeout: 40000 });
 
-test("18b · the only scopes ever requested are Files.Read and User.Read", async () => {
+test("18b · browsing only ever asks for read scopes", async () => {
   const app = await launchApp({ drive: demoDrive() });
   try {
     await app.goto();
@@ -152,8 +152,12 @@ test("18b · the only scopes ever requested are Files.Read and User.Read", async
     for (const c of scoped) {
       assert.deepEq(c.scopes, ["Files.Read", "User.Read"], `scopes for ${c.m}`);
     }
-    /* No write scope anywhere in the source, either. */
+    /* Sign-in stays read-only; write access is a separate, later request. */
     const src = await app.page.evaluate(() => SCOPES.slice());
     assert.deepEq(src, ["Files.Read", "User.Read"]);
+    const w = await app.page.evaluate(() => WRITE_SCOPES.slice());
+    assert.deepEq(w, ["Files.ReadWrite"]);
+    assert.eq(src.concat(w).some((s) => /All|Sites|Directory/.test(s)), false,
+      "must never ask for tenant-wide or all-files scopes");
   } finally { await app.close(); }
 }, { timeout: 40000 });

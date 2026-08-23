@@ -256,8 +256,35 @@
   .lb-meta{position:absolute; left:0; right:0; bottom:0; padding:16px 18px calc(18px + env(safe-area-inset-bottom));
     background:linear-gradient(transparent,rgba(0,0,0,.7)); font-size:13px; color:#d6d6dd; z-index:2;
     display:flex; justify-content:space-between; align-items:center; gap:12px}
-  .lb-meta a{color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.25);
-    padding:6px 12px; border-radius:8px; font-size:12.5px; white-space:nowrap}
+  .lb-meta{flex-direction:column; align-items:stretch}
+  .lb-info{min-width:0}
+  .lb-name{font-size:14px; font-weight:600; color:#fff; word-break:break-word}
+  .lb-sub{margin-top:3px; color:#b9b9c4; font-variant-numeric:tabular-nums}
+  .lb-path{margin-top:2px; color:#8b8b96; font-size:12px; word-break:break-all}
+  .lb-actions{display:flex; gap:8px; margin-top:12px; flex-wrap:wrap}
+  .lb-btn{color:#fff; background:rgba(255,255,255,.10); text-decoration:none;
+    border:1px solid rgba(255,255,255,.25); padding:9px 14px; border-radius:9px;
+    font-size:13px; white-space:nowrap; font-family:inherit}
+  .lb-btn:active{background:rgba(255,255,255,.2)}
+  .lb-btn.danger{border-color:rgba(255,107,107,.55); color:#ff9b9b}
+  .lb-btn[disabled]{opacity:.45}
+
+  /* confirm / picker sheet, shown above the lightbox */
+  .sheet-back{position:fixed; inset:0; z-index:300; background:rgba(0,0,0,.6); display:none}
+  .sheet-back.open{display:block}
+  .sheet{position:fixed; z-index:310; left:50%; bottom:0; transform:translateX(-50%);
+    width:min(480px,100%); max-height:76dvh; display:none; flex-direction:column;
+    background:var(--surface); border:1px solid var(--line);
+    border-radius:18px 18px 0 0; padding-bottom:env(safe-area-inset-bottom)}
+  .sheet.open{display:flex}
+  .sheet h3{margin:0; padding:16px 18px 10px; font-size:16px; font-weight:650}
+  .sheet .body{padding:0 18px 8px; color:var(--muted); font-size:14px; line-height:1.5;
+    overflow:auto}
+  .sheet .row{display:flex; gap:10px; padding:14px 18px calc(16px + env(safe-area-inset-bottom))}
+  .sheet .row .btn{margin-top:0}
+  .pick{overflow:auto; max-height:46dvh; padding:4px 10px 10px}
+  .pick .fld{cursor:pointer}
+  .pick .fld.sel{background:rgba(94,161,255,.16); border:1px solid var(--accent)}
   @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -290,7 +317,9 @@
         <a href="https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noopener">Entra → App registrations</a>,
         add a <b>Single-page application (SPA)</b> redirect URI of exactly
         <span class="url-chip" id="redirUri">—</span>, choose <b>Personal Microsoft accounts only</b>, and copy the
-        <b>Application (client) ID</b>. Sign-in is read-only (<code>Files.Read</code>); your photos and login never leave your device.</p>
+        <b>Application (client) ID</b>. Sign-in is read-only (<code>Files.Read</code>); permission to change
+        anything (<code>Files.ReadWrite</code>) is asked for separately, the first time you delete or move a
+        photo. Your photos and login never leave your device.</p>
     </details>
   </div>
 </div>
@@ -383,13 +412,36 @@
   <div id="folderTreeEl"></div>
 </div>
 
+<!-- CONFIRM / FOLDER PICKER SHEET -->
+<div class="sheet-back" id="sheetBack"></div>
+<div class="sheet" id="sheet">
+  <h3 id="sheetTitle">Are you sure?</h3>
+  <div class="body" id="sheetBody"></div>
+  <div class="pick" id="sheetPick" style="display:none"></div>
+  <div class="row">
+    <button class="btn ghost" id="sheetCancel">Cancel</button>
+    <button class="btn" id="sheetOk">Confirm</button>
+  </div>
+</div>
+
 <!-- LIGHTBOX -->
 <div id="lightbox">
   <button class="lb-close" id="lbClose">✕</button>
   <button class="lb-nav lb-prev" id="lbPrev" aria-label="Previous"></button>
   <button class="lb-nav lb-next" id="lbNext" aria-label="Next"></button>
   <img id="lbImg" alt="" />
-  <div class="lb-meta"><span id="lbName"></span><a id="lbDl" download>Download</a></div>
+  <div class="lb-meta">
+    <div class="lb-info">
+      <div class="lb-name" id="lbName"></div>
+      <div class="lb-sub" id="lbSub"></div>
+      <div class="lb-path" id="lbPath"></div>
+    </div>
+    <div class="lb-actions">
+      <a class="lb-btn" id="lbDl" download>Download</a>
+      <button class="lb-btn" id="lbMove">Move…</button>
+      <button class="lb-btn danger" id="lbDelete">Delete</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -398,7 +450,10 @@
    Auth: MSAL.js (PKCE, no secret).  Data: Microsoft Graph.
    ============================================================ */
 
+// Browsing is read-only. Write access is asked for separately, the first time
+// you actually delete or move something (incremental consent).
 const SCOPES = ["Files.Read", "User.Read"];
+const WRITE_SCOPES = ["Files.ReadWrite"];
 const GRAPH = "https://graph.microsoft.com/v1.0";
 // Pre-registered app so users don't have to create their own. A saved ID in
 // localStorage (entered manually) still wins over this default.
@@ -629,6 +684,57 @@ async function graphGet(url, tries = 0){
     throw new Error("Graph " + r.status + ": " + body);
   }
   return r.json();
+}
+
+/* ---- Write access, asked for only when you first delete or move something.
+   Sign-in itself stays read-only; Microsoft shows a second consent prompt for
+   Files.ReadWrite at that point. Popup keeps the page (and your place in the
+   gallery) alive; a blocked popup falls back to a redirect. ---- */
+let _writeToken = null;
+async function getWriteToken(){
+  if (_writeToken) return _writeToken;
+  const req = { scopes: WRITE_SCOPES, account: pca.getActiveAccount() };
+  try {
+    return (_writeToken = (await pca.acquireTokenSilent(req)).accessToken);
+  } catch(e){
+    logLine("write consent needed: " + errText(e));
+    try {
+      return (_writeToken = (await pca.acquireTokenPopup(req)).accessToken);
+    } catch(e2){
+      logLine("write consent popup failed: " + errText(e2));
+      await pca.acquireTokenRedirect(req);   // navigates away; user returns consented
+      throw e2;
+    }
+  }
+}
+/* Has write access already been granted, without prompting? */
+async function hasWriteConsent(){
+  if (_writeToken) return true;
+  try {
+    _writeToken = (await pca.acquireTokenSilent(
+      { scopes: WRITE_SCOPES, account: pca.getActiveAccount() })).accessToken;
+    return true;
+  } catch(e){ return false; }
+}
+
+/* ---- Write calls (DELETE / PATCH). Only ever reached from an explicit
+   action in the lightbox — never from scanning or rendering. ---- */
+async function graphWrite(method, url, body){
+  const token = await getWriteToken();
+  const headers = { Authorization: "Bearer " + token };
+  if (body) headers["Content-Type"] = "application/json";
+  let r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401){
+    _writeToken = null;
+    headers.Authorization = "Bearer " + (await getWriteToken());
+    r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  }
+  if (!r.ok){
+    const text = (await r.text()).slice(0, 200);
+    logLine(method + " " + r.status + " — " + url.slice(0, 80) + " — " + text.slice(0, 80));
+    throw new Error("Graph " + r.status + ": " + text);
+  }
+  return r.status === 204 ? null : r.json().catch(() => null);
 }
 
 /* ---- List one folder's children (with thumbnails), following paging.
@@ -1022,14 +1128,51 @@ function openLightbox(p){
   try { history.pushState({ lumenLb: true }, ""); lbHistory = true; }
   catch(e){ lbHistory = false; }
 }
+const fmtBytes = (n) => {
+  if (n == null) return "";
+  const u = ["B","KB","MB","GB"]; let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1){ v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + " " + u[i];
+};
+const fmtWhen = (d) => {
+  const dt = new Date(d);
+  return isNaN(dt) ? "" : dt.toLocaleString(undefined,
+    { year:"numeric", month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
+};
+/* "/drive/root:/Pictures/2024" -> "OneDrive / Pictures / 2024" */
+const prettyPath = (path) => {
+  if (!path) return "";
+  if (path.startsWith(DEVICE_ROOT)) return "This device" +
+    path.slice(DEVICE_ROOT.length).split("/").filter(Boolean).map(s => " / " + s).join("");
+  const rel = path.startsWith(ROOT_PATH) ? path.slice(ROOT_PATH.length) : path;
+  return "OneDrive" + rel.split("/").filter(Boolean).map(s => " / " + s).join("");
+};
+
 function showLb(){
   const p = view[lbIndex]; if (!p) return;
   const img = $("lbImg");
   img.src = p.large || p.download || p.thumb || "";
   $("lbName").textContent = p.name || "";
+  const bits = [fmtBytes(p.size), fmtWhen(p.date), p.dims || ""].filter(Boolean);
+  $("lbSub").textContent = bits.join("  ·  ");
+  $("lbPath").textContent = prettyPath(p.path);
   const dl = $("lbDl");
   if (p.download){ dl.href = p.download; dl.download = p.name || ""; dl.style.display = ""; } else { dl.style.display = "none"; }
-  if (p.source === "local") return;   // local files already carry blob URLs
+  // Move/Delete act on OneDrive items only.
+  const isCloud = p.source !== "local";
+  $("lbMove").style.display = isCloud ? "" : "none";
+  $("lbDelete").style.display = isCloud ? "" : "none";
+  if (!isCloud) return;   // local files already carry blob URLs
+  // Fill in details the scan didn't capture (dimensions, exact size).
+  if (!p.dims && !p._detail){
+    p._detail = true;   // once per item — never re-enter via the showLb() below
+    graphGet(GRAPH + "/me/drive/items/" + p.id + "?$select=id,size,image,photo,fileSystemInfo")
+      .then(d => {
+        if (d.image && d.image.width) p.dims = d.image.width + " × " + d.image.height;
+        if (d.size != null) p.size = d.size;
+        if (view[lbIndex] === p) showLb();
+      }).catch(() => {});
+  }
   // Upgrade to a full-size image and (re)resolve the download link if missing.
   if (!p.large) resolveThumb(p).then(() => { if (view[lbIndex] === p && p.large) img.src = p.large; });
   if (!p.download){
@@ -1044,6 +1187,151 @@ function showLb(){
       }).catch(() => {});
   }
 }
+/* ---- Confirm / picker sheet. Resolves true (confirmed) or false. ---- */
+let sheetResolve = null;
+function openSheet({ title, body, okText, danger, picker }){
+  $("sheetTitle").textContent = title;
+  $("sheetBody").innerHTML = body || "";
+  $("sheetBody").style.display = body ? "" : "none";
+  $("sheetPick").style.display = picker ? "" : "none";
+  $("sheetOk").textContent = okText || "Confirm";
+  $("sheetOk").classList.toggle("ghost", false);
+  $("sheetOk").style.background = danger ? "var(--danger)" : "";
+  $("sheetOk").style.color = danger ? "#2a0000" : "";
+  $("sheetOk").disabled = !!picker;   // a picker needs a selection first
+  $("sheet").classList.add("open");
+  $("sheetBack").classList.add("open");
+  return new Promise((res) => { sheetResolve = res; });
+}
+function closeSheet(v){
+  $("sheet").classList.remove("open");
+  $("sheetBack").classList.remove("open");
+  const r = sheetResolve; sheetResolve = null;
+  if (r) r(v);
+}
+$("sheetCancel").onclick = () => closeSheet(false);
+$("sheetBack").onclick = () => closeSheet(false);
+$("sheetOk").onclick = () => closeSheet(true);
+
+/* ---- Remove a photo from every in-memory structure and repaint. ---- */
+function forgetPhoto(p){
+  photos = photos.filter(x => x !== p);
+  localPhotos = localPhotos.filter(x => x !== p);
+  cellCache.delete(p.id);
+  refreshTimeline(true);
+  persistCache();
+}
+
+/* ---- Delete: goes to the OneDrive recycle bin, so it is recoverable. ---- */
+async function deleteCurrent(){
+  const p = view[lbIndex]; if (!p || p.source === "local") return;
+  const consented = await hasWriteConsent();
+  const ok = await openSheet({
+    title: "Delete this photo?",
+    body: "<b>" + escapeHtml(p.name || "") + "</b><br>" + escapeHtml(prettyPath(p.path)) +
+          "<br><br>It goes to the OneDrive recycle bin, so you can still restore it from OneDrive." +
+          (consented ? "" : "<br><br>Lumen signed in read-only, so Microsoft will ask you to " +
+                            "allow changes first."),
+    okText: "Delete", danger: true,
+  });
+  if (!ok) return;
+  $("lbDelete").disabled = true;
+  try {
+    await graphWrite("DELETE", GRAPH + "/me/drive/items/" + p.id);
+    const wasAt = lbIndex;
+    forgetPhoto(p);
+    toast("Deleted — restore it from the OneDrive recycle bin", 3500);
+    if (!view.length) closeLb();
+    else { lbIndex = Math.min(wasAt, view.length - 1); showLb(); }
+  } catch(e){
+    toast("Couldn't delete: " + errText(e), 4000);
+  } finally { $("lbDelete").disabled = false; }
+}
+
+/* ---- Move: pick a destination from the folders we already know about. ---- */
+async function moveCurrent(){
+  const p = view[lbIndex]; if (!p || p.source === "local") return;
+  if (!folderTree.length){
+    toast("No folder list yet — run a scan first", 3000); return;
+  }
+  let chosen = null;
+  const el = $("sheetPick");
+  el.innerHTML = "";
+  const rows = [{ path: ROOT_PATH, name: "OneDrive" }]
+    .concat(folderTree.slice().sort((a,b) => a.path.localeCompare(b.path)));
+  for (const f of rows){
+    if (f.path === p.path) continue;             // already there
+    const row = document.createElement("div");
+    row.className = "fld";
+    row.innerHTML = '<div class="nm"></div>';
+    row.querySelector(".nm").textContent = prettyPath(f.path);
+    row.onclick = () => {
+      el.querySelectorAll(".fld.sel").forEach(n => n.classList.remove("sel"));
+      row.classList.add("sel");
+      chosen = f.path;
+      $("sheetOk").disabled = false;
+    };
+    el.appendChild(row);
+  }
+  const ok = await openSheet({
+    title: "Move to…", okText: "Move", picker: true,
+    body: "",
+  });
+  if (!ok || !chosen) return;
+  $("lbMove").disabled = true;
+  try {
+    const destId = await resolveFolderId(chosen);
+    await graphWrite("PATCH", GRAPH + "/me/drive/items/" + p.id,
+                     { parentReference: { id: destId } });
+    p.path = chosen;                    // keep the local model in step
+    ensureFolderKnown(chosen);
+    // The destination may have been auto-unticked for being empty. Moving a
+    // photo into it is a clear signal you want to see it, so release it —
+    // otherwise the photo would silently vanish from the timeline.
+    if (autoHidden.includes(chosen)){
+      autoHidden = autoHidden.filter(x => x !== chosen);
+      hiddenPaths = hiddenPaths.filter(x => x !== chosen);
+      saveFolderPrefs();
+    }
+    refreshTimeline(true);
+    persistCache();
+    showLb();
+    toast(isHidden(chosen)
+      ? "Moved — but " + prettyPath(chosen) + " is hidden, so it won't show"
+      : "Moved to " + prettyPath(chosen), 3500);
+  } catch(e){
+    toast("Couldn't move: " + errText(e), 4000);
+  } finally { $("lbMove").disabled = false; }
+}
+
+/* Destination needs an item id; resolve it by path (works for cached trees
+   recorded before ids were kept). */
+async function resolveFolderId(path){
+  if (path === ROOT_PATH){
+    const root = await graphGet(GRAPH + "/me/drive/root?$select=id");
+    return root.id;
+  }
+  const rel = path.slice(ROOT_PATH.length + 1).split("/").map(encodeURIComponent).join("/");
+  const item = await graphGet(GRAPH + "/me/drive/root:/" + rel + "?$select=id");
+  return item.id;
+}
+function ensureFolderKnown(path){
+  if (path === ROOT_PATH || folderTree.some(f => f.path === path)) return;
+  const parts = path.slice(ROOT_PATH.length + 1).split("/");
+  let cur = ROOT_PATH;
+  for (const part of parts){
+    const next = cur + "/" + part;
+    if (!folderTree.some(f => f.path === next))
+      folderTree.push({ path: next, name: part, parentPath: cur });
+    cur = next;
+  }
+}
+const escapeHtml = (s) => String(s).replace(/[&<>"]/g,
+  c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+$("lbDelete").onclick = deleteCurrent;
+$("lbMove").onclick = moveCurrent;
+
 function hideLb(){ lb.style.display = "none"; document.body.style.overflow = ""; lbIndex = -1; }
 function closeLb(){
   // If we pushed an entry, go back — popstate then hides the lightbox, so the
@@ -1063,6 +1351,11 @@ function armBackGuard(){
   try { history.pushState({ lumenGuard: true }, ""); guardPushed = true; } catch(e){}
 }
 window.addEventListener("popstate", () => {
+  if ($("sheet").classList.contains("open")){
+    closeSheet(false);
+    if (guardPushed){ try { history.pushState({ lumenGuard: true }, ""); } catch(e){} }
+    return;
+  }
   if (lb.style.display === "flex"){ lbHistory = false; hideLb(); return; }
   // Overlays have no history entry of their own, so put the guard back
   // after closing one, otherwise the next Back would quit without warning.
@@ -1089,6 +1382,10 @@ $("lbClose").onclick = closeLb;
 $("lbPrev").onclick = () => step(-1);
 $("lbNext").onclick = () => step(1);
 document.addEventListener("keydown", (e) => {
+  if ($("sheet").classList.contains("open")){
+    if (e.key === "Escape") closeSheet(false);
+    return;
+  }
   if (lb.style.display !== "flex") return;
   if (e.key === "Escape") closeLb();
   if (e.key === "ArrowRight") step(1);

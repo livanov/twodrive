@@ -242,7 +242,11 @@ async function launchApp(opts = {}) {
     const request = route.request();
     const href = request.url();
     const method = request.method();
-    state.requests.push({ method, url: href, t: Date.now() });
+    state.requests.push({
+      method, url: href, t: Date.now(),
+      /* body of writes, so tests can assert what Move actually sent */
+      postData: method === "GET" ? null : (route.request().postData() || null),
+    });
 
     try {
       if (href.startsWith(env.baseURL) || href.startsWith("http://127.0.0.1")) {
@@ -315,10 +319,26 @@ async function handleGraph(route, href, method, drive, opts, state) {
     return fulfill(route, json(t));
   }
 
+  /* Destination lookups used by Move. Must come before the generic root match. */
+  if (p === "/v1.0/me/drive/root") return fulfill(route, json({ id: "root" }));
+  m = p.match(/^\/v1\.0\/me\/drive\/root:\/(.+)$/);
+  if (m) return fulfill(route, json({ id: "folder-of:" + decodeURIComponent(m[1]) }));
+
   m = p.match(/^\/v1\.0\/me\/drive\/items\/([^/]+)$/);
   if (m) {
     const item = drive && drive.itemsById.get(m[1]);
-    return fulfill(route, json({ "@microsoft.graph.downloadUrl": (item && item["@microsoft.graph.downloadUrl"]) || null }));
+    if (method === "DELETE") {                       // OneDrive answers 204
+      if (drive) drive.itemsById.delete(m[1]);
+      return fulfill(route, { status: 204, body: "" });
+    }
+    if (method === "PATCH") return fulfill(route, json({ id: m[1] }));
+    const sel = u.searchParams.get("$select") || "";
+    const body = { "@microsoft.graph.downloadUrl": (item && item["@microsoft.graph.downloadUrl"]) || null };
+    if (/image|size/.test(sel) && item) {            // detail fetch behind the metadata line
+      if (item.size != null) body.size = item.size;
+      if (item.image) body.image = item.image;
+    }
+    return fulfill(route, json(body));
   }
 
   return fulfill(route, { status: 404, json: { error: { code: "itemNotFound", message: p } } });

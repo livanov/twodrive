@@ -33,6 +33,10 @@ function msalStubSource(opts = {}) {
     token: opts.token || "FAKE_ACCESS_TOKEN",
     hangAt: opts.hangAt || null,
     silentFails: !!opts.silentFails,
+    /* Scopes already consented to. A silent request for anything outside this
+       set fails the way MSAL does, forcing interactive consent. */
+    consented: opts.consented || null,
+    popupFails: !!opts.popupFails,
   };
   return `(() => {
   const CFG = ${JSON.stringify(cfg)};
@@ -52,10 +56,24 @@ function msalStubSource(opts = {}) {
     setActiveAccount(a){ this._active = a; }
     getActiveAccount(){ return this._active; }
     async acquireTokenSilent(req){
-      rec.calls.push({ m: "acquireTokenSilent", scopes: (req && req.scopes) || null });
+      const scopes = (req && req.scopes) || [];
+      rec.calls.push({ m: "acquireTokenSilent", scopes: scopes.length ? scopes : null });
       const h = hang("acquireTokenSilent"); if (h) return h;
       if (CFG.silentFails) throw new Error("interaction_required");
+      if (CFG.consented && scopes.some(s => !CFG.consented.includes(s))){
+        const err = new Error("consent_required");
+        err.errorCode = "consent_required";
+        throw err;
+      }
       return { accessToken: CFG.token, expiresOn: new Date(Date.now() + 3600e3), account: this._active };
+    }
+    async acquireTokenPopup(req){
+      const scopes = (req && req.scopes) || [];
+      rec.calls.push({ m: "acquireTokenPopup", scopes: scopes.length ? scopes : null });
+      const h = hang("acquireTokenPopup"); if (h) return h;
+      if (CFG.popupFails) throw new Error("popup_window_error");
+      if (CFG.consented) CFG.consented = CFG.consented.concat(scopes);   // consent granted
+      return { accessToken: CFG.token + "_RW", expiresOn: new Date(Date.now() + 3600e3), account: this._active };
     }
     async acquireTokenRedirect(req){
       rec.calls.push({ m: "acquireTokenRedirect", scopes: (req && req.scopes) || null });
