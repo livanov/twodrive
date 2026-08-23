@@ -381,9 +381,6 @@
   </div>
   <div class="fld-status" id="fldStatus"></div>
   <div id="folderTreeEl"></div>
-  <div class="diag-actions">
-    <p class="note" id="foldersNote">Unticking a folder hides it and everything inside it; ticking it back shows the lot again. Tick <b>OneDrive</b> at the top to unhide everything. Changes apply straight away — no rescan needed.</p>
-  </div>
 </div>
 
 <!-- LIGHTBOX -->
@@ -433,6 +430,7 @@ function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
 function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
 
 let bootWatchdog = null; // fires if startup stalls on the splash
+let prepaintedKey = null; // cache key already painted at boot, before auth finished
 let pca = null;          // MSAL instance
 let photos = [];         // {id,name,date,thumb,large,download}
 let deltaLink = null;    // Graph delta token for incremental rescans
@@ -929,9 +927,12 @@ function makeCell(p){
   // thumbnail yet → fetch a fresh one on demand, just for this image.
   img.onerror = () => {
     if (img._retried) return; img._retried = true;
-    resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
+    resolveThumb(p).then(u => { if (u){ img.src = p.large || u; scheduleSave(); } });
   };
-  if (p.thumb) img.src = p.thumb;
+  // Prefer the large (≈800px) render: medium is ~176px, which is visibly soft
+  // on a high-DPI phone where a grid cell is ~400 physical pixels.
+  const best = p.large || p.thumb;
+  if (best) img.src = best;
   else if (p.source !== "local") resolveThumb(p).then(u => { if (u){ img.src = u; scheduleSave(); } });
   c.appendChild(img);
   const badge = document.createElement("div");
@@ -1155,6 +1156,21 @@ function show(id){
   if (id === "gallery") armBackGuard();
 }
 
+/* One owner for the scan chip, so a stale hide-timer from a previous scan
+   can't dismiss the current one (or leave it up after this one ends). */
+let scanbarTimer = null;
+function showScanbar(){
+  if (scanbarTimer){ clearTimeout(scanbarTimer); scanbarTimer = null; }
+  $("scanbar").style.display = "flex";
+}
+function hideScanbarSoon(ms){
+  if (scanbarTimer) clearTimeout(scanbarTimer);
+  scanbarTimer = setTimeout(() => {
+    scanbarTimer = null;
+    if (!scanning) $("scanbar").style.display = "none";
+  }, ms || 3000);
+}
+
 function toast(msg, ms){
   const t = $("toast");
   t.textContent = msg; t.style.display = "block";
@@ -1167,12 +1183,15 @@ async function startGallery(force){
 
   const acct = pca && pca.getActiveAccount();
   cacheKey = "photos:" + (acct ? acct.homeAccountId : "anon");
+  lsSet("lumen_lastkey", cacheKey);   // lets the next launch prepaint before auth
 
   // 1) Load the cache BEFORE revealing the gallery, so the first thing drawn
   //    is real content — no empty-grid flash. A forced rescan (↻) keeps what's
   //    already on screen and merges into it instead of blanking.
   if (force){
     deltaLink = null; excludedPaths = []; folderTree = [];   // full walk; scan prunes what's gone
+  } else if (prepaintedKey === cacheKey && photos.length){
+    // Already on screen from the boot prepaint — don't wipe and re-read it.
   } else {
     photos = []; rendered = 0; excludedPaths = []; folderTree = [];
     cellCache.clear(); stream.innerHTML = "";
@@ -1205,7 +1224,7 @@ async function startGallery(force){
 
   // 2) Sync with OneDrive — incremental if we have a delta token, else full.
   scanning = true; acquireWake();
-  $("scanbar").style.display = "flex";
+  showScanbar();
   try {
     let needFull = !deltaLink || !!resumeFrom;
     if (deltaLink && !resumeFrom){
@@ -1222,7 +1241,9 @@ async function startGallery(force){
     if (needFull){
       const verb = resumeFrom ? "Resuming scan… " : "Scanning… ";
       await fullScan((n, f) => {
-        $("scanText").textContent = verb + n.toLocaleString() + " photos · " + f + " folders";
+        // Include what's still queued, so it's obvious whether it's still working.
+        $("scanText").textContent = verb + n.toLocaleString() + " photos · " + f +
+          " folders" + (scanPending.size ? " · " + scanPending.size + " to go" : " · finishing");
         refreshTimeline(false);   // live preview of newest photos so far
         scheduleSave();           // persist as we go, so a reload isn't empty
       }, resumeFrom);
@@ -1237,7 +1258,7 @@ async function startGallery(force){
       ? "Scan complete · " + view.length.toLocaleString() + " photos in " +
         scanInfo.folders.toLocaleString() + " folders"
       : "Up to date · " + view.length.toLocaleString() + " photos";
-    setTimeout(() => { $("scanbar").style.display = "none"; }, 3500);
+    hideScanbarSoon();
   } catch (e){
     logLine("scan aborted: " + errText(e));
     // Keep whatever we managed to load and persist it, plus the checkpoint,
@@ -1529,8 +1550,6 @@ function renderFolderTree(){
   const el = $("folderTreeEl");
   el.innerHTML = "";
   const frag = document.createDocumentFragment();
-  let skipped = 0;
-
   const addTree = (root) => {
     const keep = computeKeepMap(root);
     // Roll scan state up the tree so ancestors of an active folder light up too.
@@ -1555,7 +1574,6 @@ function renderFolderTree(){
       frag.appendChild(folderRow(node, depth, parentHidden, kids.length > 0, stateOf(node)));
       if (!treeOpen.has(node.path)) return;
       const hidden = parentHidden || hiddenPaths.includes(node.path);
-      skipped += node.kids.length - kids.length;
       for (const k of kids) walk(k, depth + 1, hidden);
     };
     walk(root, 0, false);
@@ -1571,11 +1589,6 @@ function renderFolderTree(){
     return;
   }
   el.appendChild(frag);
-
-  $("foldersNote").textContent = skipped
-    ? skipped.toLocaleString() + " empty folder" + (skipped === 1 ? "" : "s") +
-      " left out of this list — turn off “Only folders with photos” in options to see them."
-    : "Unticking a folder hides it and everything inside it; ticking it back shows the lot again. Changes apply straight away — no rescan needed.";
 }
 
 function saveFolderPrefs(){
@@ -1842,6 +1855,25 @@ bootWatchdog = setTimeout(() => {
   $("nomediaToggle").checked = honorNomedia;
   onlyWithPhotos = lsGet("lumen_onlyphotos") !== "0";
   $("withPhotosToggle").checked = onlyWithPhotos;
+
+  // Prepaint: show the cached timeline straight away, without waiting for the
+  // sign-in library to load and the account to be restored. Photos are on
+  // screen in a moment; auth and syncing carry on behind them.
+  const lastKey = lsGet("lumen_lastkey");
+  if (lastKey){
+    const cached = await idbGet(lastKey);
+    if (cached && cached.photos && cached.photos.length){
+      cacheKey = lastKey; prepaintedKey = lastKey;
+      photos = cached.photos;
+      deltaLink = cached.deltaLink || null;
+      excludedPaths = cached.excludedPaths || [];
+      folderTree = cached.folderTree || [];
+      scanInfo = cached.scanInfo || scanInfo;
+      show("gallery");
+      refreshTimeline(true);
+      setupInfiniteScroll();
+    }
+  }
 
   const saved = lsGet("lumen_cid") || DEFAULT_CID;   // fall back to the built-in app
   $("cid").value = saved;
