@@ -190,8 +190,9 @@
   #folders{position:fixed; inset:0; z-index:200; background:var(--bg); display:none;
     flex-direction:column; padding-top:env(safe-area-inset-top)}
   #folders.open{display:flex}
-  .fld-config{display:none; border-bottom:1px solid var(--line); background:var(--surface)}
-  .fld-config.open{display:block}
+  /* cog dropdown: same card as the hamburger menu, above the Folders panel */
+  #fldConfig{z-index:210; width:280px}
+  #fldBackdrop{z-index:205}
   .fld-toggle{display:flex; align-items:center; gap:11px; margin:0; padding:12px 14px;
     color:var(--text); font-size:14px;
     text-transform:none; letter-spacing:normal; font-weight:500}
@@ -214,6 +215,12 @@
   .fld-status{padding:9px 14px; font-size:12.5px; color:var(--faint); line-height:1.45;
     border-bottom:1px solid var(--line)}
   .fld-status.warn{color:#ffcf8b}
+  .fld-status.scanning{color:var(--accent)}
+  .fld.queued .nm{color:var(--muted)}
+  .fld.queued .ct{color:var(--faint); font-style:italic}
+  .fld.busy{background:rgba(94,161,255,.10)}
+  .fld.busy .nm{color:var(--accent)}
+  .fld .ct .pulse{display:inline-block}
   #folderTreeEl{flex:1; overflow:auto; padding:8px 10px 16px}
   .fld{display:flex; align-items:center; gap:9px; padding:7px 6px; border-radius:8px}
   .fld:active{background:var(--surface-2)}
@@ -306,8 +313,6 @@
         <div class="acct-mail" id="acctMail"></div>
       </div>
     </div>
-    <button class="menu-item" id="menuRefresh" role="menuitem">
-      <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/></svg></span>Rescan OneDrive</button>
     <button class="menu-item" id="menuFolders" role="menuitem">
       <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>Folders</button>
     <button class="menu-item" id="menuDiag" role="menuitem">
@@ -321,7 +326,7 @@
   <div class="empty" id="empty">
     <h2>No photos found</h2>
     Nothing with an image type turned up in this OneDrive.
-    If you just enabled OneDrive camera backup, give it time to upload, then choose Rescan from the menu.
+    If you just enabled OneDrive camera backup, give it time to upload, then use Rescan in the Folders panel.
   </div>
 </div>
 
@@ -351,12 +356,15 @@
   <div class="diag-bar">
     <b>Folders</b>
     <span class="spacer"></span>
+    <button class="icon-btn" id="fldRescan" title="Rescan OneDrive">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/></svg></button>
     <button class="icon-btn" id="fldCog" title="Options" aria-expanded="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.2 14.6a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.55V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1.03H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.56-1.1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1.03 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1.03H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.55 1.03z"/></svg></button>
     <button class="icon-btn" id="foldersClose" title="Close">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
   </div>
-  <div class="fld-config" id="fldConfig">
+  <div class="menu-backdrop" id="fldBackdrop"></div>
+  <div class="menu fld-config" id="fldConfig" role="menu">
     <label class="fld-toggle">
       <span class="ti"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></span>
       <span class="lbl">Only folders with photos</span>
@@ -435,6 +443,9 @@ let folderTree = [];     // [{path,name,parentPath}] recorded during the scan
 let scanInfo = { done:false, at:0, folders:0 };   // did a full walk ever finish?
 let scanning = false;      // a walk is in flight
 let scanFrontier = null;   // folders still to visit, checkpointed so a scan resumes
+const pathById = new Map([["root", ROOT_PATH]]);   // folder id -> path, for progress
+let scanPending = new Set();  // paths queued to be visited, shown in the tree
+let scanBusy = new Set();     // paths being listed right now
 let wakeLock = null;       // keeps the screen awake so the page isn't frozen
 
 /* Browsers freeze hidden pages, so scanning only continues while the app is
@@ -656,7 +667,10 @@ async function scanDrive(onProgress, startFrontier){
   let frontier = (startFrontier && startFrontier.length) ? startFrontier.slice() : ["root"];
   let folders = startFrontier ? (scanInfo.folders || 0) : 0;
   while (frontier.length){
+    scanBusy = new Set(frontier.map(id => pathById.get(id)).filter(Boolean));
+    scanPending = new Set(scanBusy);
     const batches = await pool(frontier, listChildren, 3);
+    scanBusy = new Set();
     const next = [];
     for (const children of batches){
       // Android's .nomedia marker. Always record it (so the toggle can filter
@@ -669,7 +683,9 @@ async function scanDrive(onProgress, startFrontier){
       for (const it of children){
         if (it.folder){
           const ppath = (it.parentReference && it.parentReference.path) || ROOT_PATH;
-          folderTree.push({ path: ppath + "/" + it.name, name: it.name, parentPath: ppath });
+          const fpath = ppath + "/" + it.name;
+          folderTree.push({ path: fpath, name: it.name, parentPath: ppath });
+          pathById.set(it.id, fpath);
           if ((it.folder.childCount ?? 1) > 0) next.push(it.id);
         } else if (it.file && (it.image || (it.file.mimeType || "").startsWith("image/"))){
           scanSeen.add(it.id);             // for pruning items that are gone
@@ -699,9 +715,11 @@ async function scanDrive(onProgress, startFrontier){
     onProgress(photos.length, folders);
     frontier = next;
     scanFrontier = next.slice();       // checkpoint: what's left to visit
+    scanPending = new Set(next.map(id => pathById.get(id)).filter(Boolean));
     scheduleCheckpoint();
+    if ($("folders").classList.contains("open")) renderFolderTree();   // live progress
   }
-  scanFrontier = null;
+  scanFrontier = null; scanPending = new Set(); scanBusy = new Set();
   await saveCheckpoint();              // walk finished — nothing left to resume
 }
 
@@ -1020,6 +1038,7 @@ window.addEventListener("popstate", () => {
   // after closing one, otherwise the next Back would quit without warning.
   const reguard = () => { if (guardPushed){ try { history.pushState({ lumenGuard: true }, ""); } catch(e){} } };
   const menu = document.getElementById("menu");
+  if ($("fldConfig").classList.contains("open")){ setFldConfig(false); reguard(); return; }
   if ($("folders").classList.contains("open")){ closeFolders(); reguard(); return; }
   if ($("diag").classList.contains("open")){ closeDiag(); reguard(); return; }
   if (menu && menu.classList.contains("open")){ setMenu(false); reguard(); return; }
@@ -1238,7 +1257,9 @@ async function startGallery(force){
     }
   } finally {
     scanning = false;
+    scanPending = new Set(); scanBusy = new Set();
     releaseWake();
+    if ($("folders").classList.contains("open")) renderFolderTree();
   }
 }
 
@@ -1289,7 +1310,6 @@ function setMenu(open){
 }
 $("menuBtn").onclick = (e) => { e.stopPropagation(); setMenu(!$("menu").classList.contains("open")); };
 $("menuBackdrop").onclick = () => setMenu(false);
-$("menuRefresh").onclick = () => { setMenu(false); startGallery(true); };   // full rescan
 $("menuSignout").onclick = () => { setMenu(false); signOut(); };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") setMenu(false); });
 
@@ -1448,7 +1468,15 @@ function folderRow(node, depth, parentHidden, hasKids){
 
   const ct = document.createElement("div");
   ct.className = "ct";
-  ct.textContent = node.total ? node.total.toLocaleString() : "";
+  if (scanning && scanBusy.has(node.path)){
+    row.classList.add("busy");
+    ct.innerHTML = '<span class="pulse"></span>';
+  } else if (scanning && scanPending.has(node.path)){
+    row.classList.add("queued");
+    ct.textContent = "queued";
+  } else {
+    ct.textContent = node.total ? node.total.toLocaleString() : "";
+  }
   row.appendChild(ct);
   return row;
 }
@@ -1461,7 +1489,8 @@ function computeKeepMap(root){
   const keep = new Map();
   const worthShowing = (n) =>
     n.total > 0 || excludedPaths.includes(n.path) ||
-    (hiddenPaths.includes(n.path) && !autoHidden.includes(n.path));
+    (hiddenPaths.includes(n.path) && !autoHidden.includes(n.path)) ||
+    (scanning && (scanPending.has(n.path) || scanBusy.has(n.path)));   // show progress
   const walk = (n) => {
     let k = worthShowing(n);
     for (const c of n.kids){ if (walk(c)) k = true; }   // no short-circuit
@@ -1474,7 +1503,12 @@ function computeKeepMap(root){
 
 function renderFolderTree(){
   const st = $("fldStatus");
-  if (scanInfo.done){
+  if (scanning){
+    st.className = "fld-status scanning";
+    st.textContent = "Scanning now — " + photos.length.toLocaleString() + " photos, " +
+      scanInfo.folders.toLocaleString() + " folders visited, " +
+      scanPending.size.toLocaleString() + " queued. Folders still to visit are marked below.";
+  } else if (scanInfo.done){
     st.className = "fld-status";
     st.textContent = "Full scan finished " + new Date(scanInfo.at).toLocaleString() +
       " — " + folderTree.length.toLocaleString() + " folders, " +
@@ -1482,7 +1516,7 @@ function renderFolderTree(){
   } else {
     st.className = "fld-status warn";
     st.textContent = "No full scan has finished yet, so folders may be missing from this tree. " +
-      "Choose Rescan OneDrive from the menu and leave it running until it says “Scan complete”.";
+      "Use the rescan button above and leave it running until it says “Scan complete”.";
   }
 
   const el = $("folderTreeEl");
@@ -1510,7 +1544,7 @@ function renderFolderTree(){
 
   if (!frag.childNodes.length){
     el.innerHTML = '<p class="note" style="padding:16px">No folder list yet — the OneDrive tree is ' +
-                   'recorded during a full scan. Choose Rescan OneDrive from the menu, then come back. ' +
+                   'recorded during a full scan. Use the rescan button above, then come back. ' +
                    'Device folders appear once you add photos from this device.</p>';
     return;
   }
@@ -1569,9 +1603,12 @@ function openFolders(){ $("folders").classList.add("open"); renderFolderTree(); 
 function closeFolders(){ $("folders").classList.remove("open"); setFldConfig(false); }
 function setFldConfig(open){
   $("fldConfig").classList.toggle("open", open);
+  $("fldBackdrop").classList.toggle("open", open);
   $("fldCog").setAttribute("aria-expanded", open ? "true" : "false");
 }
-$("fldCog").onclick = () => setFldConfig(!$("fldConfig").classList.contains("open"));
+$("fldCog").onclick = (e) => { e.stopPropagation(); setFldConfig(!$("fldConfig").classList.contains("open")); };
+$("fldBackdrop").onclick = () => setFldConfig(false);
+$("fldRescan").onclick = () => { setFldConfig(false); closeFolders(); startGallery(true); };
 $("menuFolders").onclick = () => { setMenu(false); openFolders(); };
 $("foldersClose").onclick = closeFolders;
 $("withPhotosToggle").onchange = () => {
