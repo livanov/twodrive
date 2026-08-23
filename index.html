@@ -188,9 +188,15 @@
   #folders{position:fixed; inset:0; z-index:200; background:var(--bg); display:none;
     flex-direction:column; padding-top:env(safe-area-inset-top)}
   #folders.open{display:flex}
-  .fld-toggle{display:flex; align-items:center; gap:11px; margin:0; padding:13px 14px;
-    border-bottom:1px solid var(--line); color:var(--text); font-size:14px;
+  .fld-toggles{border-bottom:1px solid var(--line)}
+  .fld-toggle{display:flex; align-items:center; gap:11px; margin:0; padding:12px 14px;
+    color:var(--text); font-size:14px;
     text-transform:none; letter-spacing:normal; font-weight:500}
+  .fld-toggle + .fld-toggle{border-top:1px solid var(--line)}
+  .fld-toggle input[type=checkbox]{width:18px; height:18px; flex:none; accent-color:var(--accent)}
+  .fld-toggle .ti{flex:none; display:grid; place-items:center; color:var(--faint)}
+  .fld-toggle .ti svg{width:17px; height:17px; display:block; fill:none; stroke:currentColor;
+    stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round}
   .fld-toggle code{background:var(--surface-2); padding:1px 6px; border-radius:6px;
     font-family:ui-monospace,Menlo,monospace; font-size:12.5px}
   #folderTreeEl{flex:1; overflow:auto; padding:8px 10px 16px}
@@ -333,10 +339,18 @@
     <button class="icon-btn" id="foldersClose" title="Close">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
   </div>
-  <label class="fld-toggle">
-    <input type="checkbox" id="nomediaToggle" />
-    <span>Honor <code>.nomedia</code> files</span>
-  </label>
+  <div class="fld-toggles">
+    <label class="fld-toggle">
+      <input type="checkbox" id="withPhotosToggle" />
+      <span class="ti"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg></span>
+      <span>Only folders with photos</span>
+    </label>
+    <label class="fld-toggle">
+      <input type="checkbox" id="nomediaToggle" />
+      <span class="ti"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16l-8-4-8 4z"/></svg></span>
+      <span>Honor <code>.nomedia</code> files</span>
+    </label>
+  </div>
   <div id="folderTreeEl"></div>
   <div class="diag-actions">
     <p class="note" id="foldersNote">Unticking a folder hides it and everything inside it; ticking it back shows the lot again. Tick <b>OneDrive</b> at the top to unhide everything. Changes apply straight away — no rescan needed.</p>
@@ -395,6 +409,7 @@ let deltaLink = null;    // Graph delta token for incremental rescans
 let excludedPaths = [];  // folder paths carrying a .nomedia (auto-detected)
 let hiddenPaths = [];    // folder paths the user unticked in the folder explorer
 let honorNomedia = true; // whether .nomedia folders are respected
+let onlyWithPhotos = true; // folder explorer: hide branches containing no photos
 let folderTree = [];     // [{path,name,parentPath}] recorded during the scan
 const ROOT_PATH = "/drive/root:";
 
@@ -1290,15 +1305,39 @@ function renderFolderTree(){
     return;
   }
   const root = buildFolderIndex();
+
+  // With the eye toggle on, drop branches with no photos anywhere inside.
+  // A folder still shows if it's .nomedia-marked or one you hid — otherwise
+  // hiding a folder would remove the only way to unhide it.
+  const keep = new Map();
+  const worthShowing = (n) =>
+    n.total > 0 || excludedPaths.includes(n.path) || hiddenPaths.includes(n.path);
+  const computeKeep = (n) => {
+    let k = worthShowing(n);
+    for (const c of n.kids){ if (computeKeep(c)) k = true; }   // no short-circuit
+    keep.set(n.path, k);
+    return k;
+  };
+  computeKeep(root);
+
   const frag = document.createDocumentFragment();
+  let skipped = 0;
   const walk = (node, depth, parentHidden) => {
     frag.appendChild(folderRow(node, depth, parentHidden));
     if (!treeOpen.has(node.path)) return;
     const hidden = parentHidden || hiddenPaths.includes(node.path);
-    for (const k of node.kids) walk(k, depth + 1, hidden);
+    for (const k of node.kids){
+      if (onlyWithPhotos && !keep.get(k.path)){ skipped++; continue; }
+      walk(k, depth + 1, hidden);
+    }
   };
   walk(root, 0, false);
   el.appendChild(frag);
+
+  $("foldersNote").textContent = skipped
+    ? skipped.toLocaleString() + " empty folder" + (skipped === 1 ? "" : "s") +
+      " hidden from this list. Unticking a folder hides it and everything inside it; tick OneDrive at the top to unhide everything."
+    : "Unticking a folder hides it and everything inside it; ticking it back shows the lot again. Changes apply straight away — no rescan needed.";
 }
 
 function setFolderVisible(path, visible){
@@ -1320,6 +1359,11 @@ function openFolders(){ $("folders").classList.add("open"); renderFolderTree(); 
 function closeFolders(){ $("folders").classList.remove("open"); }
 $("menuFolders").onclick = () => { setMenu(false); openFolders(); };
 $("foldersClose").onclick = closeFolders;
+$("withPhotosToggle").onchange = () => {
+  onlyWithPhotos = $("withPhotosToggle").checked;
+  lsSet("lumen_onlyphotos", onlyWithPhotos ? "1" : "0");
+  renderFolderTree();   // view-only filter; the timeline is unaffected
+};
 $("nomediaToggle").onchange = () => {
   honorNomedia = $("nomediaToggle").checked;
   lsSet("lumen_nomedia", honorNomedia ? "1" : "0");
@@ -1489,6 +1533,8 @@ window.addEventListener("appinstalled", () => { installEvent = null; showInstall
   try { hiddenPaths = JSON.parse(lsGet("lumen_hidden") || "[]") || []; } catch(e){ hiddenPaths = []; }
   honorNomedia = lsGet("lumen_nomedia") !== "0";
   $("nomediaToggle").checked = honorNomedia;
+  onlyWithPhotos = lsGet("lumen_onlyphotos") !== "0";
+  $("withPhotosToggle").checked = onlyWithPhotos;
 
   const saved = lsGet("lumen_cid") || DEFAULT_CID;   // fall back to the built-in app
   $("cid").value = saved;
