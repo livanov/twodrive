@@ -184,6 +184,30 @@
   .diag-actions .btn{margin-top:8px}
   .diag-actions .note{margin-top:10px}
 
+  /* ---------- Folder explorer ---------- */
+  #folders{position:fixed; inset:0; z-index:200; background:var(--bg); display:none;
+    flex-direction:column; padding-top:env(safe-area-inset-top)}
+  #folders.open{display:flex}
+  .fld-toggle{display:flex; align-items:center; gap:11px; margin:0; padding:13px 14px;
+    border-bottom:1px solid var(--line); color:var(--text); font-size:14px;
+    text-transform:none; letter-spacing:normal; font-weight:500}
+  .fld-toggle code{background:var(--surface-2); padding:1px 6px; border-radius:6px;
+    font-family:ui-monospace,Menlo,monospace; font-size:12.5px}
+  #folderTreeEl{flex:1; overflow:auto; padding:8px 10px 16px}
+  .fld{display:flex; align-items:center; gap:9px; padding:7px 6px; border-radius:8px}
+  .fld:active{background:var(--surface-2)}
+  .fld .tw{width:22px; height:22px; flex:none; padding:0; border:none; background:transparent;
+    display:grid; place-items:center; color:var(--faint)}
+  .fld .tw svg{width:13px; height:13px; fill:none; stroke:currentColor; stroke-width:2.4;
+    stroke-linecap:round; stroke-linejoin:round; transition:transform .15s}
+  .fld .tw.open svg{transform:rotate(90deg)}
+  .fld input[type=checkbox]{width:18px; height:18px; flex:none; accent-color:var(--accent)}
+  .fld .nm{flex:1; min-width:0; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .fld .ct{color:var(--faint); font-size:12px; font-variant-numeric:tabular-nums; flex:none}
+  .fld.off .nm{color:var(--faint); text-decoration:line-through}
+  .fld.nomedia .nm{color:var(--faint); font-style:italic}
+  .fld.root .nm{font-weight:650}
+
   .empty{display:none; text-align:center; color:var(--muted); padding:80px 30px; line-height:1.6}
   .empty h2{color:var(--text); font-weight:640; margin:0 0 8px}
 
@@ -263,6 +287,8 @@
     </div>
     <button class="menu-item" id="menuRefresh" role="menuitem">
       <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 3.5V9h-5.5"/></svg></span>Rescan OneDrive</button>
+    <button class="menu-item" id="menuFolders" role="menuitem">
+      <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span>Folders</button>
     <button class="menu-item" id="menuDiag" role="menuitem">
       <span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg></span>Diagnostics</button>
     <button class="menu-item" id="menuSignout" role="menuitem">
@@ -296,6 +322,25 @@
     <button class="btn ghost" id="diagRerun">Run checks again</button>
     <button class="btn ghost" id="diagReset">Repair: clear app cache &amp; reload</button>
     <p class="note">Repair unregisters the service worker, clears the offline cache and the stored photo list, then reloads. It does not sign you out.</p>
+  </div>
+</div>
+
+<!-- FOLDER EXPLORER -->
+<div id="folders">
+  <div class="diag-bar">
+    <b>Folders</b>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="foldersClose" title="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg></button>
+  </div>
+  <label class="fld-toggle">
+    <input type="checkbox" id="nomediaToggle" />
+    <span>Honor <code>.nomedia</code> files</span>
+  </label>
+  <div id="folderTreeEl"></div>
+  <div class="diag-actions">
+    <button class="btn ghost" id="foldersShowAll">Show all folders</button>
+    <p class="note" id="foldersNote">Unticking a folder hides it and everything inside it. Changes apply straight away — no rescan needed.</p>
   </div>
 </div>
 
@@ -348,7 +393,22 @@ function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
 let pca = null;          // MSAL instance
 let photos = [];         // {id,name,date,thumb,large,download}
 let deltaLink = null;    // Graph delta token for incremental rescans
-let excludedPaths = [];  // folder paths carrying a .nomedia (and thus skipped)
+let excludedPaths = [];  // folder paths carrying a .nomedia (auto-detected)
+let hiddenPaths = [];    // folder paths the user unticked in the folder explorer
+let honorNomedia = true; // whether .nomedia folders are respected
+let folderTree = [];     // [{path,name,parentPath}] recorded during the scan
+const ROOT_PATH = "/drive/root:";
+
+/* A path is hidden if it is, or sits under, a folder the user unticked. */
+function isHidden(path){
+  if (!path || !hiddenPaths.length) return false;
+  for (const p of hiddenPaths){ if (path === p || path.startsWith(p + "/")) return true; }
+  return false;
+}
+/* Everything currently filtered out of the timeline. */
+function isFilteredOut(path){
+  return isHidden(path) || (honorNomedia && isExcluded(path));
+}
 let localPhotos = [];    // photos read from this device {source:"local"}
 let localSeen = new Set();// dedupe key (name|size) for local files already added
 let scanSeen = new Set(); // ids seen during the current full walk (for pruning)
@@ -396,7 +456,7 @@ async function persistCache(){
   if (!cacheKey) return;
   const lean = photos.map(p => ({ id:p.id, name:p.name, date:p.date,
     thumb:p.thumb, large:p.large, download:p.download, path:p.path }));
-  await idbSet(cacheKey, { photos: lean, deltaLink, excludedPaths, savedAt: Date.now() });
+  await idbSet(cacheKey, { photos: lean, deltaLink, excludedPaths, folderTree, savedAt: Date.now() });
 }
 let _savedOnce = false;
 function scheduleSave(){
@@ -533,15 +593,17 @@ async function scanDrive(onProgress){
     const batches = await pool(frontier, listChildren, 3);
     const next = [];
     for (const children of batches){
-      // Honor Android's .nomedia: skip this folder's images and, by not
-      // queueing its subfolders below, everything beneath it too.
+      // Android's .nomedia marker. Always record it (so the toggle can filter
+      // instantly), but only skip the subtree when the toggle is on.
       if (children.some(it => it.file && (it.name || "").toLowerCase() === ".nomedia")){
         const ref = children[0] && children[0].parentReference;
         if (ref && ref.path && !excludedPaths.includes(ref.path)) excludedPaths.push(ref.path);
-        continue;
+        if (honorNomedia) continue;
       }
       for (const it of children){
         if (it.folder){
+          const ppath = (it.parentReference && it.parentReference.path) || ROOT_PATH;
+          folderTree.push({ path: ppath + "/" + it.name, name: it.name, parentPath: ppath });
           if ((it.folder.childCount ?? 1) > 0) next.push(it.id);
         } else if (it.file && (it.image || (it.file.mimeType || "").startsWith("image/"))){
           scanSeen.add(it.id);             // for pruning items that are gone
@@ -594,13 +656,14 @@ function toRecord(it, prev){
 /* ---- Full first-time scan: proven folder walk, then snapshot a delta
    token so subsequent launches only fetch changes. ---- */
 async function fullScan(onProgress){
-  _listReqs = 0; excludedPaths = [];   // small first pages again; rediscover .nomedia folders
+  _listReqs = 0; excludedPaths = []; folderTree = [];   // rediscover markers and the tree
   scanSeen = new Set();
   await scanDrive(onProgress);         // merges into existing photos, so a cached view isn't wiped
-  // The walk completed, so anything not seen is gone (deleted, or now under a
+  // The walk completed, so anything not seen is gone (deleted, or skipped as
   // .nomedia). Drop it — this is what keeps a merging rescan accurate.
+  // Folder hiding is applied at render time, never by discarding data here.
   photos = photos.filter(p => {
-    if (scanSeen.has(p.id) && !isExcluded(p.path)) return true;
+    if (scanSeen.has(p.id)) return true;
     cellCache.delete(p.id); return false;
   });
   try {
@@ -640,11 +703,12 @@ async function deltaSync(onProgress){
     else { deltaLink = data["@odata.deltaLink"] || deltaLink; url = null; }
     onProgress && onProgress(byId.size);
   }
-  // Drop anything under a .nomedia folder (handles ordering + folders newly
-  // excluded this sync).
+  // Only drop .nomedia items while the toggle is on; with it off we keep them
+  // so switching back and forth doesn't need a rescan. User-hidden folders are
+  // never dropped here — that filtering happens when the timeline is built.
   const before = byId.size;
   photos = [...byId.values()].filter(p => {
-    if (isExcluded(p.path)){ cellCache.delete(p.id); return false; }
+    if (honorNomedia && isExcluded(p.path)){ cellCache.delete(p.id); return false; }
     return true;
   });
   removed += before - photos.length;
@@ -686,7 +750,10 @@ const monthLabel = (d) => {
 function buildView(){
   const dkey = (p) => (p.name || "").toLowerCase() + "|" + (p.size == null ? "?" : p.size);
   const seen = new Map();
-  for (const p of photos){ const k = dkey(p); if (!seen.has(k)) seen.set(k, p); }
+  for (const p of photos){
+    if (isFilteredOut(p.path)) continue;   // hidden folder or .nomedia
+    const k = dkey(p); if (!seen.has(k)) seen.set(k, p);
+  }
   for (const p of localPhotos){ seen.set(dkey(p), p); }   // local overrides OneDrive dup
   view = [...seen.values()];
   view.sort((a,b) => new Date(b.date||0) - new Date(a.date||0));
@@ -852,13 +919,13 @@ function armBackGuard(){
 }
 window.addEventListener("popstate", () => {
   if (lb.style.display === "flex"){ lbHistory = false; hideLb(); return; }
+  // Overlays have no history entry of their own, so put the guard back
+  // after closing one, otherwise the next Back would quit without warning.
+  const reguard = () => { if (guardPushed){ try { history.pushState({ lumenGuard: true }, ""); } catch(e){} } };
   const menu = document.getElementById("menu");
-  if (menu && menu.classList.contains("open")){
-    setMenu(false);
-    // The menu has no history entry of its own, so put the guard back.
-    if (guardPushed){ try { history.pushState({ lumenGuard: true }, ""); } catch(e){} }
-    return;
-  }
+  if ($("folders").classList.contains("open")){ closeFolders(); reguard(); return; }
+  if ($("diag").classList.contains("open")){ closeDiag(); reguard(); return; }
+  if (menu && menu.classList.contains("open")){ setMenu(false); reguard(); return; }
   if (!guardPushed) return;                       // browser tab → normal Back
   if (backArmed){                                 // second press: really leave
     guardPushed = false; backArmed = false; clearTimeout(backTimer);
@@ -977,14 +1044,16 @@ async function startGallery(force){
   //    is real content — no empty-grid flash. A forced rescan (↻) keeps what's
   //    already on screen and merges into it instead of blanking.
   if (force){
-    deltaLink = null; excludedPaths = [];   // full walk; scan prunes what's gone
+    deltaLink = null; excludedPaths = []; folderTree = [];   // full walk; scan prunes what's gone
   } else {
-    photos = []; rendered = 0; excludedPaths = []; cellCache.clear(); stream.innerHTML = "";
+    photos = []; rendered = 0; excludedPaths = []; folderTree = [];
+    cellCache.clear(); stream.innerHTML = "";
     const cached = await idbGet(cacheKey);
     if (cached && cached.photos && cached.photos.length){
       photos = cached.photos;
       deltaLink = cached.deltaLink || null;
       excludedPaths = cached.excludedPaths || [];
+      folderTree = cached.folderTree || [];
     }
   }
   const haveCache = photos.length > 0;
@@ -1136,6 +1205,135 @@ $("localInput").onchange = (e) => {
   if (!n) alert("No images found in that selection.");
 };
 
+/* ========================= Folder explorer =========================
+   Renders the OneDrive tree recorded during the scan (no extra network
+   calls) and lets you untick folders. Hiding is applied when the
+   timeline is built, so it takes effect immediately. */
+const treeOpen = new Set([ROOT_PATH]);   // expanded nodes
+
+function buildFolderIndex(){
+  const nodes = new Map();
+  const mk = (path, name, parentPath) =>
+    ({ path, name, parentPath, kids: [], direct: 0, total: 0 });
+  nodes.set(ROOT_PATH, mk(ROOT_PATH, "OneDrive", null));
+  for (const f of folderTree){
+    if (!nodes.has(f.path)) nodes.set(f.path, mk(f.path, f.name, f.parentPath));
+  }
+  for (const n of nodes.values()){
+    if (n.path === ROOT_PATH) continue;
+    const parent = nodes.get(n.parentPath) || nodes.get(ROOT_PATH);
+    parent.kids.push(n);
+  }
+  for (const p of photos){ const n = nodes.get(p.path); if (n) n.direct++; }
+  const roll = (n) => { n.total = n.direct + n.kids.reduce((s,k) => s + roll(k), 0); return n.total; };
+  roll(nodes.get(ROOT_PATH));
+  for (const n of nodes.values()){
+    n.kids.sort((a,b) => (b.total - a.total) || a.name.localeCompare(b.name));
+  }
+  return nodes.get(ROOT_PATH);
+}
+
+const CHEVRON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>';
+
+function folderRow(node, depth, parentHidden){
+  const selfHidden = hiddenPaths.includes(node.path);
+  const hidden = parentHidden || selfHidden;
+  const nomedia = honorNomedia && excludedPaths.includes(node.path);
+  const row = document.createElement("div");
+  row.className = "fld" + (hidden || nomedia ? " off" : "") + (nomedia ? " nomedia" : "") +
+                  (node.path === ROOT_PATH ? " root" : "");
+  row.style.paddingLeft = (6 + depth * 15) + "px";
+
+  const tw = document.createElement("button");
+  tw.className = "tw" + (treeOpen.has(node.path) ? " open" : "");
+  if (node.kids.length){
+    tw.innerHTML = CHEVRON;
+    tw.onclick = (e) => {
+      e.stopPropagation();
+      if (treeOpen.has(node.path)) treeOpen.delete(node.path); else treeOpen.add(node.path);
+      renderFolderTree();
+    };
+  }
+  row.appendChild(tw);
+
+  if (node.path !== ROOT_PATH){
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !hidden;
+    cb.disabled = parentHidden;   // implied by an unticked ancestor
+    cb.onchange = () => setFolderVisible(node.path, cb.checked);
+    row.appendChild(cb);
+  }
+
+  const nm = document.createElement("div");
+  nm.className = "nm";
+  nm.textContent = node.name + (nomedia ? "  (.nomedia)" : "");
+  nm.onclick = () => {
+    if (!node.kids.length) return;
+    if (treeOpen.has(node.path)) treeOpen.delete(node.path); else treeOpen.add(node.path);
+    renderFolderTree();
+  };
+  row.appendChild(nm);
+
+  const ct = document.createElement("div");
+  ct.className = "ct";
+  ct.textContent = node.total ? node.total.toLocaleString() : "";
+  row.appendChild(ct);
+  return row;
+}
+
+function renderFolderTree(){
+  const el = $("folderTreeEl");
+  el.innerHTML = "";
+  if (!folderTree.length){
+    el.innerHTML = '<p class="note" style="padding:16px">No folder list yet — it is recorded during a ' +
+                   'full scan. Choose Rescan OneDrive from the menu, then come back.</p>';
+    return;
+  }
+  const root = buildFolderIndex();
+  const frag = document.createDocumentFragment();
+  const walk = (node, depth, parentHidden) => {
+    frag.appendChild(folderRow(node, depth, parentHidden));
+    if (!treeOpen.has(node.path)) return;
+    const hidden = parentHidden || hiddenPaths.includes(node.path);
+    for (const k of node.kids) walk(k, depth + 1, hidden);
+  };
+  walk(root, 0, false);
+  el.appendChild(frag);
+}
+
+function setFolderVisible(path, visible){
+  if (visible) hiddenPaths = hiddenPaths.filter(p => p !== path);
+  else if (!hiddenPaths.includes(path)){
+    // Drop now-redundant descendants, then hide this whole subtree.
+    hiddenPaths = hiddenPaths.filter(p => !p.startsWith(path + "/"));
+    hiddenPaths.push(path);
+  }
+  lsSet("lumen_hidden", JSON.stringify(hiddenPaths));
+  renderFolderTree();
+  refreshTimeline(true);
+}
+
+function openFolders(){ $("folders").classList.add("open"); renderFolderTree(); }
+function closeFolders(){ $("folders").classList.remove("open"); }
+$("menuFolders").onclick = () => { setMenu(false); openFolders(); };
+$("foldersClose").onclick = closeFolders;
+$("foldersShowAll").onclick = () => {
+  hiddenPaths = [];
+  lsSet("lumen_hidden", "[]");
+  renderFolderTree();
+  refreshTimeline(true);
+  toast("All folders shown");
+};
+$("nomediaToggle").onchange = () => {
+  honorNomedia = $("nomediaToggle").checked;
+  lsSet("lumen_nomedia", honorNomedia ? "1" : "0");
+  renderFolderTree();
+  refreshTimeline(true);
+  if (!honorNomedia && excludedPaths.length)
+    toast("Rescan to load photos from those folders", 3500);
+};
+
 /* ============================ Diagnostics ============================
    No DevTools on a phone, so the app reports on itself: what it can
    reach, what auth thinks, what's cached, and the recent error log. */
@@ -1250,7 +1448,9 @@ async function runDiag(){
   say("— Local data —");
   say("photos in memory: " + photos.length + " onedrive, " + localPhotos.length + " device, " + view.length + " shown");
   say("deltaLink: " + (deltaLink ? "present (incremental sync ready)" : "none (full scan needed)"));
-  say("excluded (.nomedia) folders: " + excludedPaths.length);
+  say("folders known: " + folderTree.length);
+  say("honor .nomedia: " + honorNomedia + " (" + excludedPaths.length + " such folders)");
+  say("hidden by you: " + hiddenPaths.length + (hiddenPaths.length ? "\n  " + hiddenPaths.slice(0,15).join("\n  ") : ""));
   try {
     const acct = pca && pca.getActiveAccount();
     const key = "photos:" + (acct ? acct.homeAccountId : "anon");
@@ -1290,6 +1490,11 @@ window.addEventListener("appinstalled", () => { installEvent = null; showInstall
 
 /* ---- Boot ---- */
 (async () => {
+  // Restore folder-visibility settings before anything renders.
+  try { hiddenPaths = JSON.parse(lsGet("lumen_hidden") || "[]") || []; } catch(e){ hiddenPaths = []; }
+  honorNomedia = lsGet("lumen_nomedia") !== "0";
+  $("nomediaToggle").checked = honorNomedia;
+
   const saved = lsGet("lumen_cid") || DEFAULT_CID;   // fall back to the built-in app
   $("cid").value = saved;
   if (lsGet("lumen_cid")) $("resetBtn").style.display = "block";
