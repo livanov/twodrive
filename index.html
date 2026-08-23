@@ -789,9 +789,30 @@ async function deltaSync(onProgress){
   let url = deltaLink;
   let changed = 0, removed = 0;
   const byId = new Map(photos.map(p => [p.id, p]));
+  // Folders created since the last full walk must join the tree too, or the
+  // explorer under-reports counts and can't offer them for hiding.
+  const known = new Set(folderTree.map(f => f.path));
+  const ensureFolder = (path) => {
+    if (!path || path === ROOT_PATH || known.has(path)) return;
+    if (!path.startsWith(ROOT_PATH + "/")) return;
+    let cur = ROOT_PATH;
+    for (const part of path.slice(ROOT_PATH.length + 1).split("/")){
+      const next = cur + "/" + part;
+      if (!known.has(next)){
+        folderTree.push({ path: next, name: part, parentPath: cur });
+        known.add(next);
+      }
+      cur = next;
+    }
+  };
   while (url){
     const data = await graphGet(url);
     for (const it of (data.value || [])){
+      if (it.folder && !it.deleted){
+        const pp = (it.parentReference && it.parentReference.path) || ROOT_PATH;
+        ensureFolder(pp + "/" + it.name);
+        pathById.set(it.id, pp + "/" + it.name);
+      }
       // A newly-added .nomedia marks its folder (and below) as excluded.
       if (it.file && (it.name || "").toLowerCase() === ".nomedia"){
         const ref = it.parentReference;
@@ -804,7 +825,9 @@ async function deltaSync(onProgress){
       }
       const isImg = it.file && (it.image || (it.file.mimeType || "").startsWith("image/"));
       if (isImg){
-        byId.set(it.id, toRecord(it, byId.get(it.id))); changed++;
+        const rec = toRecord(it, byId.get(it.id));
+        ensureFolder(rec.path);    // its folder may be new since the last walk
+        byId.set(it.id, rec); changed++;
         cellCache.delete(it.id);   // changed file → rebuild its cell with fresh thumb
       } else if (it.file && byId.has(it.id)){
         byId.delete(it.id); removed++; cellCache.delete(it.id);   // no longer an image
@@ -841,6 +864,9 @@ async function resolveThumb(p){
 
 /* ============================ Rendering ============================ */
 const stream = $("stream");
+// Kept so a failed scan, which replaces this markup with an error, can't
+// leave the error showing after a later successful scan.
+const EMPTY_HTML = $("empty").innerHTML;
 let renderQueue = [];   // flat list of {type:'month'|'photo', ...}
 let rendered = 0;
 const BATCH = 90;
@@ -1251,7 +1277,10 @@ async function startGallery(force){
       setupInfiniteScroll();
     }
     await persistCache();
-    if (!view.length) $("empty").style.display = "block";
+    if (!view.length){
+      $("empty").innerHTML = EMPTY_HTML;   // undo any earlier failure message
+      $("empty").style.display = "block";
+    }
     // Say plainly that it finished, rather than just vanishing.
     $("scanbar").classList.remove("tappable");
     $("scanText").textContent = needFull
@@ -1620,18 +1649,27 @@ function setFolderVisible(path, visible){
    later dropped into them stays out of the timeline until you opt in.
    Folders you've explicitly ticked are left alone. */
 function autoHideEmptyFolders(){
-  const before = hiddenPaths.length;
+  const before = JSON.stringify(hiddenPaths);
   const walk = (n) => {
-    if (n.path !== ROOT_PATH && n.total === 0){
-      if (!userTicked.includes(n.path) && !hiddenPaths.includes(n.path)){
-        hiddenPaths.push(n.path); autoHidden.push(n.path);
+    if (n.path !== ROOT_PATH){
+      if (n.total === 0){
+        if (!userTicked.includes(n.path) && !hiddenPaths.includes(n.path)){
+          hiddenPaths.push(n.path); autoHidden.push(n.path);
+        }
+        return;   // whole subtree is covered by this one entry
       }
-      return;   // whole subtree is covered by this one entry
+      // It has photos now, but we hid it automatically when it looked empty —
+      // e.g. it was skipped as .nomedia and that option has since been turned
+      // off. Release it; folders YOU unticked are never touched here.
+      if (autoHidden.includes(n.path)){
+        autoHidden = autoHidden.filter(p => p !== n.path);
+        hiddenPaths = hiddenPaths.filter(p => p !== n.path);
+      }
     }
     for (const k of n.kids) walk(k);
   };
   walk(buildFolderIndex());
-  if (hiddenPaths.length !== before) saveFolderPrefs();
+  if (JSON.stringify(hiddenPaths) !== before) saveFolderPrefs();
 }
 
 function openFolders(){ $("folders").classList.add("open"); renderFolderTree(); }

@@ -21,9 +21,8 @@ const { buildDrive, file, thumbSet } = require("./lib/fixtures");
  * Nothing ever removes it again: the rescan fetches the photos (they are
  * in `photos`) but buildView() filters them out via hiddenPaths.
  * ------------------------------------------------------------------ */
-test.skip(
+test(
   "BUG1 · turning off .nomedia and rescanning reveals the marked photos",
-  "app bug: the folder was auto-unticked for being empty while the marker was honoured, and is never un-hidden (index.html, autoHideEmptyFolders)",
   async () => {
     const app = await launchApp({ drive: nomediaDrive() });
     try {
@@ -58,9 +57,8 @@ test.skip(
  * `folderTree`, so buildFolderIndex() has no node for its path: the
  * photo is missing from every folder count and there is no row to untick.
  * ------------------------------------------------------------------ */
-test.skip(
+test(
   "BUG2 · a folder that arrives via delta appears in the folder explorer",
-  "app bug: deltaSync() never records new folders in folderTree, so per-folder counts under-report and the folder cannot be hidden (index.html, deltaSync)",
   async () => {
     const drive = demoDrive();
     const item = {
@@ -103,9 +101,8 @@ test.skip(
  * later successful scan that legitimately finds nothing still shows the
  * stale error instead of "No photos found".
  * ------------------------------------------------------------------ */
-test.skip(
+test(
   "BUG3 · the empty state recovers after a failed scan is followed by a good one",
-  "app bug: the failure branch overwrites #empty's markup permanently (index.html, startGallery catch block)",
   async () => {
     const drive = buildDrive([file("readme.txt")]);   // a drive with no photos at all
     const st = { fail: true };
